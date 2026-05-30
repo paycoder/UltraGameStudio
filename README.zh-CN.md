@@ -1,5 +1,9 @@
 # OpenWorkflow
 
+<div align="center">
+  <a href="README.md">English</a> | 中文
+</div>
+
 OpenWorkflow 是一个 Tauri 桌面端工作流编辑器。它支持用可视化方式编排 AI 工作流，直接调整节点参数，在本地运行，并把同一份 IR 转成可执行的 Claude Code 风格脚本。
 
 ![OpenWorkflow 编辑器截图](docs/assets/openworkflow-editor.png)

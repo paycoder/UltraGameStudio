@@ -1,5 +1,9 @@
 # OpenWorkflow
 
+<div align="center">
+  English | <a href="README.zh-CN.md">中文</a>
+</div>
+
 OpenWorkflow is a Tauri desktop editor for AI workflow graphs. It lets you design workflows visually, inspect node-level settings, run them locally, and compile the same IR into executable Claude Code-style scripts.
 
 ![OpenWorkflow editor screenshot](docs/assets/openworkflow-editor.png)
