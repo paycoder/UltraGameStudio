@@ -20,6 +20,7 @@ The shared IR keeps workflow structure portable while letting each node choose i
 
 ## Why OpenWorkflow
 
+- Describe the goal in the bottom-right AI input and generate an editable Workflow blueprint.
 - Visual workflow authoring instead of hand-editing large multi-agent scripts.
 - A reusable prompt library with common workflow rewrites and review prompts.
 - Workspace and session history so you can return to earlier work quickly.
@@ -53,11 +54,12 @@ From the repository root, `run.bat` launches the app and rebuilds when needed, a
 ## Basic Usage
 
 1. Create a new workflow or open an existing one.
-2. Pick a runtime adapter such as Claude Code, Codex, or Gemini, then tune node models as needed.
-3. Select a node on the canvas to edit its prompt and parameters.
-4. Use the prompt panel to apply common edits such as clarity, completeness, cost, reliability, and rollback-oriented fixes.
-5. Run the workflow, watch node status updates, and stop at any time.
-6. Switch sessions or workspaces from the history rail to continue earlier work.
+2. Describe the task in the bottom-right AI input. OpenWorkflow generates the Workflow blueprint automatically.
+3. Keep refining the blueprint by typing follow-up instructions in the same input, or click common prompts on the right panel for structure, completeness, cost, reliability, and rollback-oriented edits.
+4. Select individual nodes when you need to manually edit prompts, models, schemas, or execution parameters.
+5. Pick a runtime adapter such as Claude Code, Codex, or Gemini, then tune node models as needed.
+6. Click the top Run button to execute the workflow, watch per-node status updates, and stop at any time.
+7. Switch sessions or workspaces from the history rail to continue earlier work.
 
 ## Project Layout
 
