@@ -1,0 +1,196 @@
+<!DOCTYPE html><html><head>
+      <title>claude-code-workflow-openworkflow</title>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      
+      <link rel="stylesheet" href="file:///c:\Users\FW\.vscode\extensions\shd101wyy.markdown-preview-enhanced-0.8.25\crossnote\dependencies\katex\katex.min.css">
+      
+      
+      
+      
+      
+      
+      
+      <style>
+      code[class*=language-],pre[class*=language-]{color:#333;background:0 0;font-family:Consolas,"Liberation Mono",Menlo,Courier,monospace;text-align:left;white-space:pre;word-spacing:normal;word-break:normal;word-wrap:normal;line-height:1.4;-moz-tab-size:8;-o-tab-size:8;tab-size:8;-webkit-hyphens:none;-moz-hyphens:none;-ms-hyphens:none;hyphens:none}pre[class*=language-]{padding:.8em;overflow:auto;border-radius:3px;background:#f5f5f5}:not(pre)>code[class*=language-]{padding:.1em;border-radius:.3em;white-space:normal;background:#f5f5f5}.token.blockquote,.token.comment{color:#969896}.token.cdata{color:#183691}.token.doctype,.token.macro.property,.token.punctuation,.token.variable{color:#333}.token.builtin,.token.important,.token.keyword,.token.operator,.token.rule{color:#a71d5d}.token.attr-value,.token.regex,.token.string,.token.url{color:#183691}.token.atrule,.token.boolean,.token.code,.token.command,.token.constant,.token.entity,.token.number,.token.property,.token.symbol{color:#0086b3}.token.prolog,.token.selector,.token.tag{color:#63a35c}.token.attr-name,.token.class,.token.class-name,.token.function,.token.id,.token.namespace,.token.pseudo-class,.token.pseudo-element,.token.url-reference .token.variable{color:#795da3}.token.entity{cursor:help}.token.title,.token.title .token.punctuation{font-weight:700;color:#1d3e81}.token.list{color:#ed6a43}.token.inserted{background-color:#eaffea;color:#55a532}.token.deleted{background-color:#ffecec;color:#bd2c00}.token.bold{font-weight:700}.token.italic{font-style:italic}.language-json .token.property{color:#183691}.language-markup .token.tag .token.punctuation{color:#333}.language-css .token.function,code.language-css{color:#0086b3}.language-yaml .token.atrule{color:#63a35c}code.language-yaml{color:#183691}.language-ruby .token.function{color:#333}.language-markdown .token.url{color:#795da3}.language-makefile .token.symbol{color:#795da3}.language-makefile .token.variable{color:#183691}.language-makefile .token.builtin{color:#0086b3}.language-bash .token.keyword{color:#0086b3}pre[data-line]{position:relative;padding:1em 0 1em 3em}pre[data-line] .line-highlight-wrapper{position:absolute;top:0;left:0;background-color:transparent;display:block;width:100%}pre[data-line] .line-highlight{position:absolute;left:0;right:0;padding:inherit 0;margin-top:1em;background:hsla(24,20%,50%,.08);background:linear-gradient(to right,hsla(24,20%,50%,.1) 70%,hsla(24,20%,50%,0));pointer-events:none;line-height:inherit;white-space:pre}pre[data-line] .line-highlight:before,pre[data-line] .line-highlight[data-end]:after{content:attr(data-start);position:absolute;top:.4em;left:.6em;min-width:1em;padding:0 .5em;background-color:hsla(24,20%,50%,.4);color:#f4f1ef;font:bold 65%/1.5 sans-serif;text-align:center;vertical-align:.3em;border-radius:999px;text-shadow:none;box-shadow:0 1px #fff}pre[data-line] .line-highlight[data-end]:after{content:attr(data-end);top:auto;bottom:.4em}html body{font-family:'Helvetica Neue',Helvetica,'Segoe UI',Arial,freesans,sans-serif;font-size:16px;line-height:1.6;color:#333;background-color:#fff;overflow:initial;box-sizing:border-box;word-wrap:break-word}html body>:first-child{margin-top:0}html body h1,html body h2,html body h3,html body h4,html body h5,html body h6{line-height:1.2;margin-top:1em;margin-bottom:16px;color:#000}html body h1{font-size:2.25em;font-weight:300;padding-bottom:.3em}html body h2{font-size:1.75em;font-weight:400;padding-bottom:.3em}html body h3{font-size:1.5em;font-weight:500}html body h4{font-size:1.25em;font-weight:600}html body h5{font-size:1.1em;font-weight:600}html body h6{font-size:1em;font-weight:600}html body h1,html body h2,html body h3,html body h4,html body h5{font-weight:600}html body h5{font-size:1em}html body h6{color:#5c5c5c}html body strong{color:#000}html body del{color:#5c5c5c}html body a:not([href]){color:inherit;text-decoration:none}html body a{color:#08c;text-decoration:none}html body a:hover{color:#00a3f5;text-decoration:none}html body img{max-width:100%}html body>p{margin-top:0;margin-bottom:16px;word-wrap:break-word}html body>ol,html body>ul{margin-bottom:16px}html body ol,html body ul{padding-left:2em}html body ol.no-list,html body ul.no-list{padding:0;list-style-type:none}html body ol ol,html body ol ul,html body ul ol,html body ul ul{margin-top:0;margin-bottom:0}html body li{margin-bottom:0}html body li.task-list-item{list-style:none}html body li>p{margin-top:0;margin-bottom:0}html body .task-list-item-checkbox{margin:0 .2em .25em -1.8em;vertical-align:middle}html body .task-list-item-checkbox:hover{cursor:pointer}html body blockquote{margin:16px 0;font-size:inherit;padding:0 15px;color:#5c5c5c;background-color:#f0f0f0;border-left:4px solid #d6d6d6}html body blockquote>:first-child{margin-top:0}html body blockquote>:last-child{margin-bottom:0}html body hr{height:4px;margin:32px 0;background-color:#d6d6d6;border:0 none}html body table{margin:10px 0 15px 0;border-collapse:collapse;border-spacing:0;display:block;width:100%;overflow:auto;word-break:normal;word-break:keep-all}html body table th{font-weight:700;color:#000}html body table td,html body table th{border:1px solid #d6d6d6;padding:6px 13px}html body dl{padding:0}html body dl dt{padding:0;margin-top:16px;font-size:1em;font-style:italic;font-weight:700}html body dl dd{padding:0 16px;margin-bottom:16px}html body code{font-family:Menlo,Monaco,Consolas,'Courier New',monospace;font-size:.85em;color:#000;background-color:#f0f0f0;border-radius:3px;padding:.2em 0}html body code::after,html body code::before{letter-spacing:-.2em;content:'\00a0'}html body pre>code{padding:0;margin:0;word-break:normal;white-space:pre;background:0 0;border:0}html body .highlight{margin-bottom:16px}html body .highlight pre,html body pre{padding:1em;overflow:auto;line-height:1.45;border:#d6d6d6;border-radius:3px}html body .highlight pre{margin-bottom:0;word-break:normal}html body pre code,html body pre tt{display:inline;max-width:initial;padding:0;margin:0;overflow:initial;line-height:inherit;word-wrap:normal;background-color:transparent;border:0}html body pre code:after,html body pre code:before,html body pre tt:after,html body pre tt:before{content:normal}html body blockquote,html body dl,html body ol,html body p,html body pre,html body ul{margin-top:0;margin-bottom:16px}html body kbd{color:#000;border:1px solid #d6d6d6;border-bottom:2px solid #c7c7c7;padding:2px 4px;background-color:#f0f0f0;border-radius:3px}@media print{html body{background-color:#fff}html body h1,html body h2,html body h3,html body h4,html body h5,html body h6{color:#000;page-break-after:avoid}html body blockquote{color:#5c5c5c}html body pre{page-break-inside:avoid}html body table{display:table}html body img{display:block;max-width:100%;max-height:100%}html body code,html body pre{word-wrap:break-word;white-space:pre}}.markdown-preview{width:100%;height:100%;box-sizing:border-box}.markdown-preview ul{list-style:disc}.markdown-preview ul ul{list-style:circle}.markdown-preview ul ul ul{list-style:square}.markdown-preview ol{list-style:decimal}.markdown-preview ol ol,.markdown-preview ul ol{list-style-type:lower-roman}.markdown-preview ol ol ol,.markdown-preview ol ul ol,.markdown-preview ul ol ol,.markdown-preview ul ul ol{list-style-type:lower-alpha}.markdown-preview .newpage,.markdown-preview .pagebreak{page-break-before:always}.markdown-preview pre.line-numbers{position:relative;padding-left:3.8em;counter-reset:linenumber}.markdown-preview pre.line-numbers>code{position:relative}.markdown-preview pre.line-numbers .line-numbers-rows{position:absolute;pointer-events:none;top:1em;font-size:100%;left:0;width:3em;letter-spacing:-1px;border-right:1px solid #999;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}.markdown-preview pre.line-numbers .line-numbers-rows>span{pointer-events:none;display:block;counter-increment:linenumber}.markdown-preview pre.line-numbers .line-numbers-rows>span:before{content:counter(linenumber);color:#999;display:block;padding-right:.8em;text-align:right}.markdown-preview .mathjax-exps .MathJax_Display{text-align:center!important}.markdown-preview:not([data-for=preview]) .code-chunk .code-chunk-btn-group{display:none}.markdown-preview:not([data-for=preview]) .code-chunk .status{display:none}.markdown-preview:not([data-for=preview]) .code-chunk .output-div{margin-bottom:16px}.markdown-preview .md-toc{padding:0}.markdown-preview .md-toc .md-toc-details{margin:0;padding:0;border:none}.markdown-preview .md-toc summary.md-toc-link-wrapper{cursor:pointer;list-style-position:outside}.markdown-preview .md-toc summary.md-toc-link-wrapper::marker{font-size:.85em}.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link{display:inline;padding:.25rem 0}.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link div,.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link p{display:inline}.markdown-preview .md-toc .md-toc-link-wrapper.highlighted .md-toc-link{font-weight:800}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='0']{margin-left:12px}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='1']{margin-left:28px}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='2']{margin-left:44px}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='3']{margin-left:60px}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='4']{margin-left:76px}.markdown-preview .md-toc .md-toc-link-wrapper[data-level='5']{margin-left:80px}.markdown-preview a.tag,.markdown-preview a.tag:active,.markdown-preview a.tag:link,.markdown-preview a.tag:visited,.markdown-preview span.tag{display:inline-block;background-color:var(--vscode-badge-background,rgba(127,127,127,.18));color:var(--vscode-badge-foreground,currentColor);border-radius:2em;font-size:.85em;font-weight:500;padding:.05em .55em;line-height:1.5;white-space:nowrap;text-decoration:none;text-shadow:none;box-shadow:none;transition:background-color .12s ease,opacity .12s ease}.markdown-preview a.tag{cursor:pointer}.markdown-preview a.tag:focus,.markdown-preview a.tag:hover{background-color:var(--vscode-badge-background,rgba(127,127,127,.32));color:var(--vscode-badge-foreground,currentColor);opacity:.85;text-decoration:none;outline:0}.markdown-preview .wikilink-embed-content{border-left:3px solid var(--vscode-textBlockQuote-border,rgba(128,128,128,.3));background:var(--vscode-textBlockQuote-background,rgba(128,128,128,.05));margin:.5em 0;padding:.5em .75em;border-radius:0 3px 3px 0}.markdown-preview .wikilink-embed-content.wikilink-embed-error{border-left-color:var(--vscode-errorForeground,#cf222e);color:var(--vscode-errorForeground,#cf222e);font-style:italic;opacity:.8}.markdown-preview .wikilink-embed-content h1:first-child,.markdown-preview .wikilink-embed-content h2:first-child,.markdown-preview .wikilink-embed-content h3:first-child,.markdown-preview .wikilink-embed-content h4:first-child,.markdown-preview .wikilink-embed-content h5:first-child,.markdown-preview .wikilink-embed-content h6:first-child{margin-top:.25em}.markdown-preview .wikilink-embed-content .wikilink-embed-content{margin:.25em 0;padding:.25em .5em}.markdown-preview .block-id{display:none}.scrollbar-style::-webkit-scrollbar{width:8px}.scrollbar-style::-webkit-scrollbar-track{border-radius:10px;background-color:transparent}.scrollbar-style::-webkit-scrollbar-thumb{border-radius:5px;background-color:rgba(150,150,150,.66);border:4px solid rgba(150,150,150,.66);background-clip:content-box}html body[for=html-export]:not([data-presentation-mode]){position:relative;width:100%;height:100%;top:0;left:0;margin:0;padding:0;overflow:auto}html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{position:relative;top:0;min-height:100vh}@media screen and (min-width:914px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{padding:2em calc(50% - 457px + 2em)}}@media screen and (max-width:914px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{padding:2em}}@media screen and (max-width:450px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{font-size:14px!important;padding:1em}}@media print{html body[for=html-export]:not([data-presentation-mode]) #sidebar-toc-btn{display:none}}html body[for=html-export]:not([data-presentation-mode]) #sidebar-toc-btn{position:fixed;bottom:8px;left:8px;font-size:28px;cursor:pointer;color:inherit;z-index:99;width:32px;text-align:center;opacity:.4}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] #sidebar-toc-btn{opacity:1}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc{position:fixed;top:0;left:0;width:300px;height:100%;padding:32px 0 48px 0;font-size:14px;box-shadow:0 0 4px rgba(150,150,150,.33);box-sizing:border-box;overflow:auto;background-color:inherit}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar{width:8px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar-track{border-radius:10px;background-color:transparent}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar-thumb{border-radius:5px;background-color:rgba(150,150,150,.66);border:4px solid rgba(150,150,150,.66);background-clip:content-box}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc a{text-decoration:none}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc{padding:0 16px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-details{margin:0;padding:0;border:none}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link{display:inline;padding:.25rem 0}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link div,html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link p{display:inline}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper.highlighted .md-toc-link{font-weight:800}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='0']{padding-left:0}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='1']{padding-left:16px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='2']{padding-left:32px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='3']{padding-left:48px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='4']{padding-left:64px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper[data-level='5']{padding-left:80px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{left:300px;width:calc(100% - 300px);padding:2em calc(50% - 457px - 300px / 2);margin:0;box-sizing:border-box}@media screen and (max-width:1274px){html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{padding:2em}}@media screen and (max-width:450px){html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{width:100%}}html body[for=html-export]:not([data-presentation-mode]):not([html-show-sidebar-toc]) .markdown-preview{left:50%;transform:translateX(-50%)}html body[for=html-export]:not([data-presentation-mode]):not([html-show-sidebar-toc]) .md-sidebar-toc{display:none}
+/* Please visit the URL below for more information: */
+/*   https://shd101wyy.github.io/markdown-preview-enhanced/#/customize-css */
+
+      </style>
+      <script type="text/javascript">
+  document.addEventListener("DOMContentLoaded", function () {
+    // your code here
+  });
+</script>
+    </head>
+    <body for="html-export">
+      <div class="crossnote markdown-preview  ">
+      
+<h1 id="claude-code-有了-workflow那其他大模型怎么办我最近发现了开源版-openworkflow">Claude Code 有了 Workflow，那其他大模型怎么办？我最近发现了开源版 OpenWorkflow </h1>
+<p>最近一直在看 Claude Code 的 workflows。</p>
+<p>它吸引我的地方不是“又多了一个功能”，而是它把复杂任务从一轮一轮聊天里抽了出来。任务可以拆成多个 subagents、并行分支和流水线，然后交给脚本去协调执行。</p>
+<p>这件事挺关键：workflow 不再只是一次对话里的临时安排，而是可以保存、修改、重复使用的流程。</p>
+<p>不过看完之后，我也有一个问题：如果 Workflow 会成为 AI 编程里很常用的一层，它为什么要绑在某一个模型或某一个 CLI 上？</p>
+<p>顺着这个问题，我最近发现了一个开源版 OpenWorkflow。</p>
+<p>它的思路很直接：把 Claude Code 这类 Workflow 做成可视化画布，并且让同一份 Workflow 可以面向 Claude Code、Codex、Gemini，甚至更多本地或云端模型运行时。</p>
+<p><img src="assets/openworkflow-editor.png" alt="OpenWorkflow 编辑器截图"></p>
+<h2 id="有哪些优点">有哪些优点 </h2>
+<p>先说我觉得比较有用的几个点。</p>
+<ul>
+<li><strong>支持多种大模型运行时</strong>：同一份 workflow 不用为每个模型重写。Claude Code、Codex、Gemini 这些运行时都可以往这个方向接。</li>
+<li><strong>画布化编辑</strong>：节点、连线、并行分支、流水线都能直接看到，比在脚本里来回找结构轻松很多。</li>
+<li><strong>节点可以单独改</strong>：每个节点都能配置自己的 prompt、model、schema 和执行参数。简单节点用便宜模型，关键节点再用强模型。</li>
+<li><strong>常用提示词方便改 workflow</strong>：右侧提示词库里有补边界、简化结构、模型降级、并行优化、降级回退这些常见改法，不用每次从空白 prompt 开始写。</li>
+<li><strong>支持临时调整节点</strong>：调试时可以先停下来，只改失败节点的提示词、模型或输入，再继续处理，不必把整条流程推倒重来。</li>
+<li><strong>会话和工作区历史会保存</strong>：试错时不容易丢上下文，也方便回到之前的 workflow 版本继续改。</li>
+<li><strong>运行状态比较直观</strong>：哪个节点在跑、哪个节点完成、哪个节点失败，画布上能看到，比盯一长串日志更适合调 workflow。</li>
+<li><strong>密钥保存在本机</strong>：API key 不需要交给远端服务，适合本地调试和浏览器侧的 AI 辅助编辑。</li>
+<li><strong>有统一 IR 和脚本视图</strong>：画布背后不是纯 UI，它能生成 Claude Code 风格脚本，也给 Codex、Gemini 这类后续适配留了结构。</li>
+</ul>
+<p>对我来说，最核心的还是前两点：workflow 不应该每换一个模型就重写一遍，也不应该只能藏在某个工具的脚本里。</p>
+<p>比如一个代码审查流程，大概会有这些步骤：</p>
+<ul>
+<li>先定位改动范围</li>
+<li>再做风险分类</li>
+<li>然后分别从质量、安全、兼容性几个角度看</li>
+<li>最后汇总结果，必要时回退或重新跑某个节点</li>
+</ul>
+<p>这套结构本身是有价值的。它不应该只是 Claude Code 脚本里的一段逻辑，也不应该因为换成 Codex 或 Gemini 就全部重来。</p>
+<p>OpenWorkflow 的想法是，先把 workflow 画出来。后面跑在哪个模型上，再通过运行时适配去处理。</p>
+<h2 id="我第一次上手是按这个顺序试的">我第一次上手，是按这个顺序试的 </h2>
+<p>如果只是想先摸一下这个工具，不用一上来研究所有概念。我当时是按下面这个顺序试的。</p>
+<h3 id="第一步新建一个-workflow">第一步：新建一个 Workflow </h3>
+<p>打开应用后，左侧有“新建 Workflow”。点一下，会得到一个最基础的流程：</p>
+<pre data-role="codeBlock" data-info="text" class="language-text text"><code>Start -&gt; Agent -&gt; End
+</code></pre><p>这一步先不用追求复杂。先确认画布上能看到节点，能拖动，能选中节点。</p>
+<p>配图占位：这里可以补一张“新建 Workflow 后的默认画布”截图。</p>
+<h3 id="第二步选运行时">第二步：选运行时 </h3>
+<p>顶部工具栏里可以切换运行时适配器，比如：</p>
+<ul>
+<li>Claude Code</li>
+<li>Codex</li>
+<li>Gemini</li>
+</ul>
+<p>这就是 OpenWorkflow 比较核心的点。它不是把 workflow 直接绑死到某一个模型里，而是把运行时作为可以切换的目标。</p>
+<p>如果你只是先体验，可以先选默认运行时。等 workflow 结构搭好，再考虑不同模型适合跑哪一段。</p>
+<p>配图占位：这里可以补一张“运行时下拉选择 Claude Code / Codex / Gemini”的截图。</p>
+<h3 id="第三步选中节点改提示词和模型">第三步：选中节点，改提示词和模型 </h3>
+<p>点中间的 Agent 节点，右侧会出现节点属性。</p>
+<p>这里可以改：</p>
+<ul>
+<li>节点名称</li>
+<li>prompt</li>
+<li>模型档位</li>
+<li>schema</li>
+<li>其他参数</li>
+</ul>
+<p>这个设计比较实用，因为 workflow 不是一个大 prompt。每个节点都可以有自己的职责。</p>
+<p>比如一个审查流程里：</p>
+<ul>
+<li><code>定位改动范围</code> 可以用轻一点的模型</li>
+<li><code>安全审查</code> 可以用更强的模型</li>
+<li><code>汇总结果</code> 可以单独作为一个节点</li>
+<li><code>验证遗漏</code> 可以再接一个 verifier 节点</li>
+</ul>
+<p>这样比把所有要求塞进一个长 prompt 里更容易维护。</p>
+<p>配图占位：这里可以补一张“选中节点后右侧属性面板”的截图。</p>
+<h3 id="第四步用右侧常用提示词改-workflow">第四步：用右侧常用提示词改 workflow </h3>
+<p>右侧有一组常用提示词，不是那种泛泛的“帮我优化一下”，而是更像 workflow 检查清单。</p>
+<p>里面有这些方向：</p>
+<ul>
+<li>明确目标</li>
+<li>统一命名</li>
+<li>简化结构</li>
+<li>补全边界条件</li>
+<li>错误处理</li>
+<li>数据连线</li>
+<li>模型降级</li>
+<li>并行优化</li>
+<li>复用与缓存</li>
+<li>降级回退</li>
+<li>错误边界</li>
+</ul>
+<p>这对普通程序员其实很有用。</p>
+<p>很多时候不是不知道要让 AI 做什么，而是不知道怎么把任务拆得更稳。右侧这些提示词相当于提醒你：这个 workflow 有没有失败路径？有没有边界条件？有没有不必要的昂贵模型？有没有可以并行的部分？</p>
+<h3 id="第五步把串行流程改成并行或流水线">第五步：把串行流程改成并行或流水线 </h3>
+<p>如果一个任务里有几段互不依赖的检查，就可以考虑改成 parallel。</p>
+<p>比如代码审查可以拆成：</p>
+<pre data-role="codeBlock" data-info="text" class="language-text text"><code>定位改动范围
+  -&gt; 并行审查
+      -&gt; 质量检查
+      -&gt; 安全检查
+      -&gt; 兼容性检查
+  -&gt; 汇总
+  -&gt; 验证
+</code></pre><p>如果几步之间有明显前后依赖，就适合用 pipeline。</p>
+<p>比如：</p>
+<pre data-role="codeBlock" data-info="text" class="language-text text"><code>收集上下文 -&gt; 生成修改方案 -&gt; 执行修改 -&gt; 验证结果
+</code></pre><p>这里的重点不是节点看起来多漂亮，而是你能把任务拆成可解释、可替换、可重跑的结构。</p>
+<p>配图占位：这里可以补一张“parallel 或 pipeline 节点”的截图。</p>
+<h3 id="第六步运行观察节点状态">第六步：运行，观察节点状态 </h3>
+<p>搭好流程后，可以点顶部的运行按钮。</p>
+<p>运行时画布上会显示节点状态。哪个节点在跑，哪个节点完成，哪个节点失败，会比纯文本日志更直观。</p>
+<p>这对调 workflow 很重要。</p>
+<p>如果一个大任务失败了，你不一定要整段 prompt 从头改。可以先看失败在哪个节点，停下来改这个节点的提示词、模型或数据输入，再继续处理。</p>
+<p>配图占位：这里可以补一张“运行中节点状态”的截图。</p>
+<h3 id="第七步看生成脚本或者继续保存历史">第七步：看生成脚本，或者继续保存历史 </h3>
+<p>顶部还有脚本入口，可以看到从画布生成的 Claude Code 风格 Workflow 脚本。</p>
+<p>这一步能帮助你确认一件事：OpenWorkflow 不是单纯画图，它背后确实有 workflow 结构。</p>
+<p>另外左侧也有会话和工作区历史。对经常试不同 workflow 的人来说，这比临时保存一堆 prompt 文本方便很多。</p>
+<h2 id="一个普通代码审查-workflow-可以怎么搭">一个普通代码审查 workflow 可以怎么搭 </h2>
+<p>拿“检查当前代码改动”举例，可以先搭一个很简单的版本。</p>
+<pre data-role="codeBlock" data-info="text" class="language-text text"><code>Start
+  -&gt; 定位改动范围
+  -&gt; 风险分类
+  -&gt; 并行审查
+      -&gt; 质量审查
+      -&gt; 安全审查
+      -&gt; 兼容性审查
+  -&gt; 汇总
+  -&gt; 验证遗漏
+  -&gt; End
+</code></pre><p>每个节点的职责可以写得很短：</p>
+<ul>
+<li><code>定位改动范围</code>：找出这次改动涉及的文件、模块和核心逻辑</li>
+<li><code>风险分类</code>：判断改动属于 UI、状态、文件、网络、构建还是安全相关</li>
+<li><code>质量审查</code>：看可读性、重复逻辑、边界处理</li>
+<li><code>安全审查</code>：看权限、路径、敏感信息、命令执行</li>
+<li><code>兼容性审查</code>：看平台差异、旧数据、配置变更</li>
+<li><code>汇总</code>：把几个分支的结论合成一个列表</li>
+<li><code>验证遗漏</code>：检查有没有未覆盖的关键路径</li>
+</ul>
+<p>这套流程不应该只存在于某一次对话里。</p>
+<p>它应该能保存下来。下次遇到类似任务，改几个节点就能继续用。简单节点用便宜模型，复杂节点用强模型。某个节点失败了，也可以只调整这个节点，而不是整套流程重来。</p>
+<p>这也是 workflow 有意思的地方。</p>
+<h2 id="和-claude-code-是什么关系">和 Claude Code 是什么关系 </h2>
+<p>OpenWorkflow 看起来不是要替代 Claude Code。</p>
+<p>Claude Code 已经把 workflows 这个方向讲清楚了：复杂任务可以被写成动态脚本，可以协调很多 subagents，可以在后台跑。</p>
+<p>OpenWorkflow 更像是在这个方向上补一个可视化层：</p>
+<ul>
+<li>Claude Code 擅长执行</li>
+<li>OpenWorkflow 负责把 workflow 画出来、改出来、保存下来</li>
+<li>同一份 workflow 以后可以尝试接到更多模型和运行时</li>
+</ul>
+<p>所以它不是反着来，而是顺着 Claude Code 的 Workflow 思路往外扩。</p>
+<h2 id="现在还早但方向值得看">现在还早，但方向值得看 </h2>
+<p>OpenWorkflow 现在还不算成熟。很多地方还在改，运行时适配也还要继续补。</p>
+<p>但方向是清楚的：AI 编程不会长期停留在“开一个聊天框，然后手动推进每一步”。</p>
+<p>复杂任务最后一定会变成 workflow。区别只是，这个 workflow 是锁在某个工具里，还是能被看见、编辑、迁移和复用。</p>
+<p>OpenWorkflow 现在做的，就是把这件事往后者推。</p>
+<p>如果你也在用 Claude Code workflows，或者你也在不同模型之间来回切，可以看看 OpenWorkflow。也可以去提 issue，尤其是你希望它优先支持哪些模型、CLI 或工作流格式。</p>
+<p>项目地址：</p>
+<p><a href="https://github.com/wellingfeng/OpenWorkflow">https://github.com/wellingfeng/OpenWorkflow</a></p>
+<p>参考：</p>
+<p><a href="https://code.claude.com/docs/en/workflows">https://code.claude.com/docs/en/workflows</a></p>
+
+      </div>
+      
+      
+    
+    
+    
+    
+    
+    
+  
+    </body></html>
