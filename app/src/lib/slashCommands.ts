@@ -122,18 +122,6 @@ export const SLASH_COMMANDS = [
     },
   },
   {
-    name: '/3d',
-    label: { 'zh-CN': '生成 3D 模型', 'en-US': 'Generate 3D Model' },
-    detail: {
-      'zh-CN': '调用设置 > 3D 渠道中的商用、免费或本地渠道生成 3D 模型',
-      'en-US': 'Generate a 3D model with the commercial, free, or local channel configured in Settings > 3D',
-    },
-    text: {
-      'zh-CN': '/3d ',
-      'en-US': '/3d ',
-    },
-  },
-  {
     name: '/mesh-mode-start',
     label: { 'zh-CN': '开始 Mesh 模式', 'en-US': 'Start Mesh Mode' },
     detail: {
@@ -282,36 +270,47 @@ export const STATIC_SLASH_ENTRIES: StaticSlashEntry[] = SLASH_COMMANDS.map(
   }),
 );
 
-// FreeUltraCode-specific commands surfaced in the Settings > Commands tab.
+// FreeUltraCode-specific commands surfaced in the global Settings > Commands tab.
 //
 // CONTRACT: This is a curated allowlist, NOT everything in SLASH_COMMANDS. The
 // inline `/` menu intentionally also offers generic prompt shortcuts (/plan,
 // /review, /diagnose, ...) and whatever the backend slash catalog discovers
 // (CLI commands, user skills), but the Commands tab is a reference for the
-// features that ship with and are unique to this app. Keep this list in sync
-// when adding a new first-class app command.
+// non-game features that ship with and are unique to this app. Game-specific
+// commands live under Project Settings > Commands so non-game projects do not
+// advertise game-only flows.
 export const PROJECT_COMMAND_NAMES = [
-  '/game',
   '/ultracode',
   '/deep-research',
   '/music',
   '/music-mode-start',
   '/music-mode-end',
-  '/3d',
-  '/mesh-mode-start',
-  '/mesh-mode-end',
   '/image-mode-start',
   '/image-mode-end',
   '/screenshot',
   '/screenshot-gif',
 ] as const;
 
+export const GAME_PROJECT_COMMAND_NAMES = [
+  '/game',
+  '/mesh-mode-start',
+  '/mesh-mode-end',
+] as const;
+
 const PROJECT_COMMAND_NAME_SET: ReadonlySet<string> = new Set(
   PROJECT_COMMAND_NAMES.map((name) => name.toLowerCase()),
 );
 
+const GAME_PROJECT_COMMAND_NAME_SET: ReadonlySet<string> = new Set(
+  GAME_PROJECT_COMMAND_NAMES.map((name) => name.toLowerCase()),
+);
+
 export function isProjectCommandName(name: string): boolean {
   return PROJECT_COMMAND_NAME_SET.has(name.trim().toLowerCase());
+}
+
+export function isGameProjectCommandName(name: string): boolean {
+  return GAME_PROJECT_COMMAND_NAME_SET.has(name.trim().toLowerCase());
 }
 
 export function slashText(

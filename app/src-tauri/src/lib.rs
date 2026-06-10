@@ -35,6 +35,7 @@ const SLASH_CATALOG_UPDATED_EVENT: &str = "slash-catalog-updated";
 const MAX_SLASH_ENTRIES: usize = 800;
 const MAX_COMMAND_SCAN_DEPTH: usize = 4;
 const MAX_SKILL_SCAN_DEPTH: usize = 8;
+const MAX_SKILL_INSTALL_BYTES: u64 = 512 * 1024;
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -508,6 +509,29 @@ struct SlashCatalogSnapshot {
     ready: bool,
     entries: Vec<SlashCatalogEntry>,
     error: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillInstallTarget {
+    id: String,
+    label: String,
+    path: String,
+    exists: bool,
+    skill_count: usize,
+    is_default: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledSkill {
+    name: String,
+    slug: String,
+    target_id: String,
+    path: String,
+    skill_file: String,
+    source_url: Option<String>,
+    overwritten: bool,
 }
 
 fn localized_text(zh_cn: &str, en_us: &str) -> HashMap<String, String> {
@@ -1772,6 +1796,266 @@ fn slash_catalog() -> SlashCatalogSnapshot {
     get_slash_catalog_snapshot()
 }
 
+async fn refresh_slash_catalog_async(app: AppHandle) -> Result<SlashCatalogSnapshot, String> {
+    let snapshot = tauri::async_runtime::spawn_blocking(scan_slash_catalog_blocking)
+        .await
+        .map_err(|e| format!("刷新技能目录失败: {e}"))?;
+    set_slash_catalog_snapshot(snapshot.clone());
+    let _ = app.emit(SLASH_CATALOG_UPDATED_EVENT, snapshot.clone());
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn refresh_slash_catalog(app: AppHandle) -> Result<SlashCatalogSnapshot, String> {
+    refresh_slash_catalog_async(app).await
+}
+
+fn skill_install_root(target_id: &str) -> Result<(String, String, PathBuf, bool), String> {
+    let home = user_home_dir().ok_or_else(|| "未找到用户主目录。".to_string())?;
+    let target = match target_id {
+        "global-agents" => (
+            "global-agents".to_string(),
+            "全局 Agent Skills (~/.agents/skills)".to_string(),
+            home.join(".agents").join("skills"),
+            true,
+        ),
+        "global-codex" => (
+            "global-codex".to_string(),
+            "全局 Codex Skills (~/.codex/skills)".to_string(),
+            home.join(".codex").join("skills"),
+            false,
+        ),
+        "global-claude" => (
+            "global-claude".to_string(),
+            "全局 Claude Skills (~/.claude/skills)".to_string(),
+            home.join(".claude").join("skills"),
+            false,
+        ),
+        "global-gemini" => (
+            "global-gemini".to_string(),
+            "全局 Gemini Skills (~/.gemini/skills)".to_string(),
+            home.join(".gemini").join("skills"),
+            false,
+        ),
+        _ => return Err("未知安装目标。".to_string()),
+    };
+    Ok(target)
+}
+
+fn count_installed_skills(root: &Path, depth: usize) -> usize {
+    if depth > MAX_SKILL_SCAN_DEPTH || !root.is_dir() {
+        return 0;
+    }
+    if root.join("SKILL.md").is_file() {
+        return 1;
+    }
+    let Ok(read_dir) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    read_dir
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && !skip_skill_scan_dir(path))
+        .map(|path| count_installed_skills(&path, depth + 1))
+        .sum()
+}
+
+fn skill_install_targets_blocking() -> Result<Vec<SkillInstallTarget>, String> {
+    let mut out = Vec::new();
+    for id in [
+        "global-agents",
+        "global-codex",
+        "global-claude",
+        "global-gemini",
+    ] {
+        let (id, label, path, is_default) = skill_install_root(id)?;
+        let exists = path.is_dir();
+        out.push(SkillInstallTarget {
+            id,
+            label,
+            path: display_preview_path(&path),
+            exists,
+            skill_count: if exists {
+                count_installed_skills(&path, 0)
+            } else {
+                0
+            },
+            is_default,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn skill_install_targets() -> Result<Vec<SkillInstallTarget>, String> {
+    tauri::async_runtime::spawn_blocking(skill_install_targets_blocking)
+        .await
+        .map_err(|e| format!("读取安装目标失败: {e}"))?
+}
+
+fn sanitize_skill_install_slug(input: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in input.trim().chars() {
+        let next = if ch.is_ascii_alphanumeric() || ch.is_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if matches!(ch, '_' | '-') {
+            Some(ch)
+        } else if ch.is_whitespace() || matches!(ch, '.' | '/' | '\\') {
+            Some('-')
+        } else {
+            None
+        };
+        match next {
+            Some('-') if !out.is_empty() && !last_dash => {
+                out.push('-');
+                last_dash = true;
+            }
+            Some('-') => {}
+            Some(c) => {
+                if out.chars().count() < 80 {
+                    out.push(c);
+                    last_dash = false;
+                }
+            }
+            None => {}
+        }
+    }
+
+    let trimmed = out.trim_matches('-').to_string();
+    let reserved = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    if trimmed.is_empty() {
+        "skill".to_string()
+    } else if reserved.contains(&trimmed.as_str()) {
+        format!("skill-{trimmed}")
+    } else {
+        trimmed
+    }
+}
+
+fn validate_skill_install_url(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("https://") {
+        return Err("只支持 HTTPS 下载地址。".to_string());
+    }
+    if !(lower.ends_with("/skill.md") || lower.contains("/skill.md?")) {
+        return Err("只支持直接指向 SKILL.md 的地址。".to_string());
+    }
+    Ok(())
+}
+
+fn download_skill_text(url: &str) -> Result<String, String> {
+    validate_skill_install_url(url)?;
+    let response = ureq::get(url)
+        .set("User-Agent", "FreeUltraCode")
+        .call()
+        .map_err(|e| format!("下载失败: {e}"))?;
+    if let Some(length) = response
+        .header("content-length")
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        if length > MAX_SKILL_INSTALL_BYTES {
+            return Err("SKILL.md 过大，已拒绝安装。".to_string());
+        }
+    }
+
+    let mut text = String::new();
+    response
+        .into_reader()
+        .take(MAX_SKILL_INSTALL_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("读取下载内容失败: {e}"))?;
+    if text.len() as u64 > MAX_SKILL_INSTALL_BYTES {
+        return Err("SKILL.md 过大，已拒绝安装。".to_string());
+    }
+    if text.trim().is_empty() {
+        return Err("下载内容为空。".to_string());
+    }
+    Ok(text)
+}
+
+fn install_skill_from_url_blocking(
+    url: String,
+    name: String,
+    slug: String,
+    target_id: String,
+    overwrite: bool,
+    source_url: Option<String>,
+) -> Result<InstalledSkill, String> {
+    let text = download_skill_text(&url)?;
+    let (target_id, _label, root, _is_default) = skill_install_root(&target_id)?;
+    let slug = sanitize_skill_install_slug(if slug.trim().is_empty() { &name } else { &slug });
+    std::fs::create_dir_all(&root).map_err(|e| format!("创建技能目录失败: {e}"))?;
+    let root = std::fs::canonicalize(&root).map_err(|e| format!("读取技能目录失败: {e}"))?;
+    let target_dir = root.join(&slug);
+    let skill_file = target_dir.join("SKILL.md");
+    let existed = skill_file.is_file();
+    if existed && !overwrite {
+        return Err("目标 skill 已存在。".to_string());
+    }
+
+    std::fs::create_dir_all(&target_dir).map_err(|e| format!("创建安装目录失败: {e}"))?;
+    let canonical_target =
+        std::fs::canonicalize(&target_dir).map_err(|e| format!("读取安装目录失败: {e}"))?;
+    if !canonical_target.starts_with(&root) {
+        return Err("安装路径超出允许目录。".to_string());
+    }
+
+    std::fs::write(&skill_file, text).map_err(|e| format!("写入 SKILL.md 失败: {e}"))?;
+    let source_meta = serde_json::json!({
+        "name": name.clone(),
+        "slug": slug.clone(),
+        "downloadUrl": url,
+        "sourceUrl": source_url.clone(),
+        "installedAtMs": now_ms(),
+        "installedBy": "FreeUltraCode plugin store"
+    });
+    let _ = std::fs::write(
+        target_dir.join(".freeultracode-source.json"),
+        serde_json::to_string_pretty(&source_meta).unwrap_or_else(|_| "{}".to_string()),
+    );
+
+    Ok(InstalledSkill {
+        name,
+        slug,
+        target_id,
+        path: display_preview_path(&target_dir),
+        skill_file: display_preview_path(&skill_file),
+        source_url,
+        overwritten: existed,
+    })
+}
+
+#[tauri::command]
+async fn install_skill_from_url(
+    app: AppHandle,
+    url: String,
+    name: String,
+    slug: String,
+    target_id: String,
+    overwrite: Option<bool>,
+    source_url: Option<String>,
+) -> Result<InstalledSkill, String> {
+    let installed = tauri::async_runtime::spawn_blocking(move || {
+        install_skill_from_url_blocking(
+            url,
+            name,
+            slug,
+            target_id,
+            overwrite.unwrap_or(false),
+            source_url,
+        )
+    })
+    .await
+    .map_err(|e| format!("安装任务失败: {e}"))??;
+    let _ = refresh_slash_catalog_async(app).await;
+    Ok(installed)
+}
+
 fn known_free_channel_ids() -> HashSet<&'static str> {
     FREE_CHANNEL_ENV_MAPPINGS
         .iter()
@@ -2757,14 +3041,41 @@ fn project_suggested_mcp_servers(engine: &str) -> Vec<ProjectMcpServerSuggestion
             );
         }
         "unreal" => {
-            push(
-                "unreal-mcp",
-                "Unreal MCP",
-                "第三方 Unreal Editor MCP；需要项目插件/Remote Control 等 Editor 侧能力。",
-                "uvx",
-                vec!["mcp-unreal"],
-                true,
-            );
+            // Converge with the one-click installer: same stable id, and point at
+            // the cached verified binary when it is already present so "apply
+            // recommended" + probe work without extra steps. Falls back to the
+            // expected cache path (download-on-setup) when not yet installed.
+            let cached = ue_mcp_expected_binary_path()
+                .filter(|path| path.is_file() && ue_mcp_binary_verified(path));
+            let command = cached
+                .as_ref()
+                .map(|path| display_preview_path(path))
+                .or_else(|| {
+                    ue_mcp_expected_binary_path().map(|path| display_preview_path(&path))
+                })
+                .unwrap_or_else(|| UE_MCP_ASSET_NAME.to_string());
+            let (available, availability_note) = if cached.is_some() {
+                (true, "已安装并校验的 UE MCP 二进制。".to_string())
+            } else {
+                (
+                    false,
+                    "尚未安装；在上方点击“一键配置 Unreal MCP”自动下载并配置。".to_string(),
+                )
+            };
+            suggestions.push(ProjectMcpServerSuggestion {
+                id: UE_MCP_SERVER_ID.to_string(),
+                label: "Unreal MCP (全版本)".to_string(),
+                description:
+                    "版本无关的 Unreal RemoteControl MCP，支持 UE 4.25–5.8；一键安装会自动启用 RemoteControl/Python 插件并写入工程配置。"
+                        .to_string(),
+                transport: "stdio".to_string(),
+                command,
+                args: Vec::new(),
+                env: HashMap::new(),
+                available,
+                availability_note,
+                requires_user_approval: true,
+            });
         }
         "godot" => {
             push(
@@ -3123,6 +3434,559 @@ async fn project_mcp_probe(
     tauri::async_runtime::spawn_blocking(move || project_mcp_probe_blocking(root_path, server))
         .await
         .map_err(|e| format!("MCP 探测任务失败: {e}"))?
+}
+
+// ===== Unreal Engine MCP one-click install + setup =====
+//
+// Wraps `ue-mcp-for-all-versions` (https://github.com/wellingfeng/ue-mcp-for-all-versions):
+// a single version-agnostic binary that drives UE 4.25–5.8 over RemoteControl.
+// The shipped v0.2.0 binary is purely the MCP server/probe (`--host/--port/
+// --probe`); it does NOT implement project configuration. So we download +
+// sha256-verify the pinned release, cache it under the global tools dir, and do
+// the project setup natively in Rust: enable the stock engine plugins in the
+// `.uproject`, make the RemoteControl web server auto-start on launch (the
+// `WebControl.EnableServerOnStartup` CVar, which is exactly what the binary's
+// own "Start UE and run WebControl.StartServer" message asks for), and write/
+// merge the project `.mcp.json`. This gives the UI true one-click "Enable
+// Unreal MCP" without depending on a binary subcommand that does not exist.
+
+/// Stable server id used in project settings so one-click + "apply recommended" converge.
+const UE_MCP_SERVER_ID: &str = "ue-mcp-for-all-versions";
+const UE_MCP_RELEASE_VERSION: &str = "v0.2.0";
+const UE_MCP_ASSET_NAME: &str = "ue-mcp-for-all-versions-v0.2.0-win64.exe";
+const UE_MCP_DOWNLOAD_URL: &str = "https://github.com/wellingfeng/ue-mcp-for-all-versions/releases/download/v0.2.0/ue-mcp-for-all-versions-v0.2.0-win64.exe";
+/// sha256 of the pinned win64 release asset (verified before trusting the binary).
+const UE_MCP_SHA256: &str = "2a19a32818933db1357fe9c59d6ea415654937272d169c0bf7ddcaeb89d0762d";
+const UE_MCP_DOWNLOAD_LIMIT: usize = 64 * 1024 * 1024;
+const UE_MCP_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UeMcpBinaryStatus {
+    server_id: String,
+    version: String,
+    path: String,
+    available: bool,
+    downloaded: bool,
+    sha256: String,
+    source: String,
+    supported_platform: bool,
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UeMcpSetupRequest {
+    root_path: String,
+    server_command: Option<String>,
+    enable_python: Option<bool>,
+    write_mcp_config: Option<bool>,
+    dry_run: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UeMcpSetupResult {
+    ok: bool,
+    changed: bool,
+    dry_run: bool,
+    uproject_path: Option<String>,
+    project_dir: Option<String>,
+    engine_association: Option<String>,
+    configured_plugins: Vec<String>,
+    changed_files: Vec<String>,
+    notes: Vec<String>,
+    warnings: Vec<String>,
+    error: Option<String>,
+    binary_path: String,
+    server_command: String,
+    raw_report: serde_json::Value,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Deterministic cache location for the pinned binary (no side effects).
+fn ue_mcp_expected_binary_path() -> Option<PathBuf> {
+    let root = storage_paths::global_root().ok()?;
+    Some(
+        root.join("tools")
+            .join("ue-mcp")
+            .join(UE_MCP_RELEASE_VERSION)
+            .join(UE_MCP_ASSET_NAME),
+    )
+}
+
+fn ue_mcp_binary_target() -> Result<PathBuf, String> {
+    let root = storage_paths::ensure_global_root_with_dirs(&["tools"])?;
+    let dir = root
+        .join("tools")
+        .join("ue-mcp")
+        .join(UE_MCP_RELEASE_VERSION);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 UE MCP 工具目录失败：{e}"))?;
+    Ok(dir.join(UE_MCP_ASSET_NAME))
+}
+
+fn ue_mcp_binary_verified(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| sha256_hex(&bytes).eq_ignore_ascii_case(UE_MCP_SHA256))
+        .unwrap_or(false)
+}
+
+fn ue_mcp_download_binary(target: &Path) -> Result<(), String> {
+    let response = ureq::get(UE_MCP_DOWNLOAD_URL)
+        .timeout(UE_MCP_DOWNLOAD_TIMEOUT)
+        .set("User-Agent", "FreeUltraCode")
+        .set("Accept", "application/octet-stream,*/*;q=0.8")
+        .call()
+        .map_err(|err| match err {
+            ureq::Error::Status(code, _) => format!("UE MCP 下载失败：HTTP {code}。"),
+            other => format!("UE MCP 下载失败：{other}"),
+        })?;
+    let mut reader = response.into_reader();
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut reader)
+        .take((UE_MCP_DOWNLOAD_LIMIT as u64) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("读取 UE MCP 下载内容失败：{e}"))?;
+    if bytes.is_empty() {
+        return Err("UE MCP 下载内容为空。".to_string());
+    }
+    if bytes.len() > UE_MCP_DOWNLOAD_LIMIT {
+        return Err("UE MCP 二进制超出大小上限。".to_string());
+    }
+    let digest = sha256_hex(&bytes);
+    if !digest.eq_ignore_ascii_case(UE_MCP_SHA256) {
+        return Err(format!(
+            "UE MCP 校验失败：期望 {UE_MCP_SHA256}，实际 {digest}。已放弃使用未校验的二进制。"
+        ));
+    }
+    let tmp = target.with_extension("download");
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("写入 UE MCP 二进制失败：{e}"))?;
+    std::fs::rename(&tmp, target)
+        .or_else(|_| {
+            std::fs::remove_file(target).ok();
+            std::fs::rename(&tmp, target)
+        })
+        .map_err(|e| format!("保存 UE MCP 二进制失败：{e}"))?;
+    Ok(())
+}
+
+fn ue_mcp_ensure_binary_blocking() -> Result<UeMcpBinaryStatus, String> {
+    if !cfg!(target_os = "windows") {
+        return Err(
+            "一键安装目前仅提供 Windows 预编译二进制；其他平台请手动编译 ue-mcp-for-all-versions。"
+                .to_string(),
+        );
+    }
+    let target = ue_mcp_binary_target()?;
+    if target.is_file() && ue_mcp_binary_verified(&target) {
+        return Ok(UeMcpBinaryStatus {
+            server_id: UE_MCP_SERVER_ID.to_string(),
+            version: UE_MCP_RELEASE_VERSION.to_string(),
+            path: display_preview_path(&target),
+            available: true,
+            downloaded: false,
+            sha256: UE_MCP_SHA256.to_string(),
+            source: "cached".to_string(),
+            supported_platform: true,
+            message: "已使用本地缓存的 UE MCP 二进制（校验通过）。".to_string(),
+        });
+    }
+    if target.is_file() {
+        std::fs::remove_file(&target).ok();
+    }
+    ue_mcp_download_binary(&target)?;
+    Ok(UeMcpBinaryStatus {
+        server_id: UE_MCP_SERVER_ID.to_string(),
+        version: UE_MCP_RELEASE_VERSION.to_string(),
+        path: display_preview_path(&target),
+        available: true,
+        downloaded: true,
+        sha256: UE_MCP_SHA256.to_string(),
+        source: "downloaded".to_string(),
+        supported_platform: true,
+        message: "已下载并校验 UE MCP 二进制。".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn ue_mcp_ensure_binary() -> Result<UeMcpBinaryStatus, String> {
+    tauri::async_runtime::spawn_blocking(ue_mcp_ensure_binary_blocking)
+        .await
+        .map_err(|e| format!("UE MCP 下载任务失败: {e}"))?
+}
+
+/// Atomic write via tmp + rename so a crash mid-write can't corrupt project
+/// config files. Falls back to remove+rename when the target already exists.
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!(
+        "{}tmp",
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!("{e}."))
+            .unwrap_or_default()
+    ));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).or_else(|_| {
+        std::fs::remove_file(path).ok();
+        std::fs::rename(&tmp, path)
+    })
+}
+
+/// Parse an `EngineAssociation` like "5.3" / "4.25" into `(major, minor)`.
+/// Source builds use a GUID (e.g. `{...}`) and return `None`.
+fn ue_mcp_parse_engine_version(assoc: &str) -> Option<(u32, u32)> {
+    let trimmed = assoc.trim();
+    if trimmed.is_empty() || trimmed.starts_with('{') {
+        return None;
+    }
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|m| m.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+/// Stock engine plugins required for the MCP server to drive the editor over
+/// RemoteControl. `PythonScriptPlugin` is optional (gated by `enable_python`).
+const UE_MCP_REQUIRED_PLUGINS: &[&str] = &["RemoteControl", "EditorScriptingUtilities"];
+
+/// Ensure the named plugins are enabled in the `.uproject` JSON. Returns the
+/// list of plugins that were newly enabled (empty if all were already on).
+/// Preserves existing entries; only flips `Enabled` to true or appends a new
+/// `{ "Name": ..., "Enabled": true }` entry.
+fn ue_mcp_enable_uproject_plugins(
+    uproject: &Path,
+    plugins: &[&str],
+) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(uproject)
+        .map_err(|e| format!("读取 .uproject 失败：{e}"))?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("解析 .uproject JSON 失败：{e}"))?;
+    if !doc.is_object() {
+        return Err(".uproject 顶层不是 JSON 对象。".to_string());
+    }
+
+    let plugins_array = doc
+        .as_object_mut()
+        .unwrap()
+        .entry("Plugins")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if !plugins_array.is_array() {
+        return Err(".uproject 中 Plugins 字段不是数组。".to_string());
+    }
+    let list = plugins_array.as_array_mut().unwrap();
+
+    let mut newly_enabled = Vec::new();
+    for plugin in plugins {
+        let existing = list.iter_mut().find(|entry| {
+            entry
+                .get("Name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(plugin))
+        });
+        match existing {
+            Some(entry) => {
+                let was_enabled = entry
+                    .get("Enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert("Enabled".to_string(), serde_json::Value::Bool(true));
+                }
+                if !was_enabled {
+                    newly_enabled.push((*plugin).to_string());
+                }
+            }
+            None => {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "Name".to_string(),
+                    serde_json::Value::String((*plugin).to_string()),
+                );
+                obj.insert("Enabled".to_string(), serde_json::Value::Bool(true));
+                list.push(serde_json::Value::Object(obj));
+                newly_enabled.push((*plugin).to_string());
+            }
+        }
+    }
+
+    if !newly_enabled.is_empty() {
+        let serialized = serde_json::to_string_pretty(&doc)
+            .map_err(|e| format!("序列化 .uproject 失败：{e}"))?;
+        atomic_write(uproject, serialized.as_bytes())
+            .map_err(|e| format!("写入 .uproject 失败：{e}"))?;
+    }
+    Ok(newly_enabled)
+}
+
+/// Make the RemoteControl web server auto-start when the editor launches, so the
+/// MCP server can reach it without a manual `WebControl.StartServer`. Appends an
+/// idempotent `[/Script/...]` section + CVar to `Config/DefaultEngine.ini`. The
+/// CVar/port differs per engine line:
+///   - UE 4.25:  `WebControl.EnableServerOnStartup 1` on :8080 (RemoteControlWeb)
+///   - UE 4.26+: RemoteControl auto-starts on :30010, but enabling the startup
+///     CVar is harmless and makes 4.26 web-control explicit.
+/// Returns Some(relative_marker) if the file was created/modified.
+fn ue_mcp_write_remote_control_config(
+    root: &Path,
+    engine: Option<(u32, u32)>,
+) -> Result<Option<String>, String> {
+    let config_dir = root.join("Config");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("创建 Config 目录失败：{e}"))?;
+    let ini_path = config_dir.join("DefaultEngine.ini");
+
+    let existing = std::fs::read_to_string(&ini_path).unwrap_or_default();
+    // Idempotency marker: if our managed block is already present, do nothing.
+    const MARKER: &str = "; >>> FreeUltraCode: Unreal MCP RemoteControl auto-start";
+    if existing.contains(MARKER) {
+        return Ok(None);
+    }
+
+    // For 4.25 the web remote control plugin uses a different CVar/port; 4.26+
+    // auto-start :30010. We always set the startup CVar (harmless when unused)
+    // so older lines also come up without manual console input.
+    let is_legacy_425 = matches!(engine, Some((4, minor)) if minor <= 25);
+    let mut block = String::new();
+    block.push('\n');
+    block.push_str(MARKER);
+    block.push('\n');
+    block.push_str("[/Script/Engine.Engine]\n");
+    if is_legacy_425 {
+        block.push_str(
+            "+ConsoleCommands=WebControl.EnableServerOnStartup 1\n+ConsoleCommands=WebControl.StartServer\n",
+        );
+    } else {
+        block.push_str(
+            "+ConsoleCommands=RemoteControl.EnableWebServerOnStartup 1\n+ConsoleCommands=WebControl.EnableServerOnStartup 1\n",
+        );
+    }
+    block.push_str("; <<< FreeUltraCode: Unreal MCP RemoteControl auto-start\n");
+
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(&block);
+    atomic_write(&ini_path, next.as_bytes())
+        .map_err(|e| format!("写入 DefaultEngine.ini 失败：{e}"))?;
+    Ok(Some(project_relative_marker(root, &ini_path)))
+}
+
+/// Merge the MCP server entry into the project `.mcp.json` (Claude Code format:
+/// `{ "mcpServers": { "<id>": { "command": ..., "args": [] } } }`). Preserves
+/// any other servers. Returns Some(marker) when the file changed.
+fn ue_mcp_write_project_mcp_json(
+    root: &Path,
+    server_command: &str,
+) -> Result<Option<String>, String> {
+    let mcp_path = root.join(".mcp.json");
+    let mut doc: serde_json::Value = std::fs::read_to_string(&mcp_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+
+    let servers = doc
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !servers.is_object() {
+        *servers = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let servers_obj = servers.as_object_mut().unwrap();
+
+    let desired = serde_json::json!({
+        "command": server_command,
+        "args": [],
+    });
+    let already = servers_obj
+        .get(UE_MCP_SERVER_ID)
+        .map(|existing| existing == &desired)
+        .unwrap_or(false);
+    if already {
+        return Ok(None);
+    }
+    servers_obj.insert(UE_MCP_SERVER_ID.to_string(), desired);
+
+    let serialized = serde_json::to_string_pretty(&doc)
+        .map_err(|e| format!("序列化 .mcp.json 失败：{e}"))?;
+    atomic_write(&mcp_path, serialized.as_bytes())
+        .map_err(|e| format!("写入 .mcp.json 失败：{e}"))?;
+    Ok(Some(project_relative_marker(root, &mcp_path)))
+}
+
+fn ue_mcp_setup_project_blocking(req: UeMcpSetupRequest) -> Result<UeMcpSetupResult, String> {
+    let root = project_scan_root(&req.root_path)?;
+    let binary = ue_mcp_binary_target()?;
+    if !binary.is_file() {
+        return Err("UE MCP 二进制不存在，请先下载安装。".to_string());
+    }
+    if !ue_mcp_binary_verified(&binary) {
+        return Err("本地 UE MCP 二进制校验未通过，请重新下载安装。".to_string());
+    }
+    let binary_display = display_preview_path(&binary);
+    let server_command = req
+        .server_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| binary_display.clone());
+
+    let dry_run = req.dry_run == Some(true);
+
+    // Locate the .uproject — this is what makes the folder an Unreal project.
+    let uproject = project_first_root_file_with_ext(&root, "uproject").ok_or_else(|| {
+        "未在工作区根目录找到 .uproject 文件，请确认这是一个 Unreal 工程根目录。".to_string()
+    })?;
+    let engine_association = project_json_string(&uproject, "EngineAssociation");
+    let engine_version = engine_association
+        .as_deref()
+        .and_then(ue_mcp_parse_engine_version);
+
+    // Plugin set: always RemoteControl + EditorScriptingUtilities; Python opt-in.
+    let mut wanted_plugins: Vec<&str> = UE_MCP_REQUIRED_PLUGINS.to_vec();
+    let enable_python = req.enable_python != Some(false);
+    if enable_python {
+        wanted_plugins.push("PythonScriptPlugin");
+    }
+
+    let configured_plugins: Vec<String> =
+        wanted_plugins.iter().map(|p| (*p).to_string()).collect();
+    let mut changed_files: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    if dry_run {
+        // Report what *would* change without touching disk.
+        notes.push("演练模式：未写入任何文件。".to_string());
+        return Ok(UeMcpSetupResult {
+            ok: true,
+            changed: false,
+            dry_run: true,
+            uproject_path: Some(project_path_display(&uproject)),
+            project_dir: Some(display_preview_path(&root)),
+            engine_association,
+            configured_plugins,
+            changed_files,
+            notes,
+            warnings,
+            error: None,
+            binary_path: binary_display,
+            server_command,
+            raw_report: serde_json::json!({ "dryRun": true }),
+        });
+    }
+
+    // 1) Enable the stock plugins in the .uproject.
+    let newly_enabled = ue_mcp_enable_uproject_plugins(&uproject, &wanted_plugins)?;
+    if !newly_enabled.is_empty() {
+        changed_files.push(project_relative_marker(&root, &uproject));
+    }
+    // `configured_plugins` already holds the full set we ensured (enabled now or
+    // already on) so the UI shows the complete picture rather than only deltas.
+
+    // 2) Make RemoteControl auto-start so the editor is reachable without a
+    //    manual console command (the exact thing the probe message asked for).
+    if let Some(marker) = ue_mcp_write_remote_control_config(&root, engine_version)? {
+        changed_files.push(marker);
+    }
+
+    // 3) Merge the project .mcp.json (only when requested; default on).
+    if req.write_mcp_config != Some(false) {
+        if let Some(marker) = ue_mcp_write_project_mcp_json(&root, &server_command)? {
+            changed_files.push(marker);
+        }
+    }
+
+    // Best-effort connectivity probe. A failure here is EXPECTED when the editor
+    // isn't running yet — the server connects lazily — so it's a note, not an
+    // error. This is what previously surfaced as a fatal "配置失败".
+    let mut probe_report = serde_json::Value::Null;
+    let mut probe = new_spawn_command(&binary.to_string_lossy());
+    probe
+        .arg("--probe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match probe.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            if let Some(start) = stdout.find('{') {
+                if let Some(end) = stdout.rfind('}') {
+                    if end >= start {
+                        probe_report = serde_json::from_str(stdout[start..=end].trim())
+                            .unwrap_or(serde_json::Value::Null);
+                    }
+                }
+            }
+            let reachable = probe_report
+                .get("infoAvailable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || probe_report
+                    .get("routeCount")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n > 0)
+                    .unwrap_or(false);
+            if reachable {
+                notes.push("已检测到正在运行的 Unreal 编辑器，RemoteControl 连接正常。".to_string());
+            } else {
+                notes.push(
+                    "尚未检测到运行中的 Unreal 编辑器（属正常）。配置已写入，编辑器启动后 MCP 会自动连接。"
+                        .to_string(),
+                );
+            }
+        }
+        Err(e) => {
+            warnings.push(format!("连接探测未能运行：{e}"));
+        }
+    }
+
+    let changed = !changed_files.is_empty();
+    if !changed {
+        notes.push("工程已配置妥当，本次无需改动。".to_string());
+    }
+
+    Ok(UeMcpSetupResult {
+        ok: true,
+        changed,
+        dry_run: false,
+        uproject_path: Some(project_path_display(&uproject)),
+        project_dir: Some(display_preview_path(&root)),
+        engine_association,
+        configured_plugins,
+        changed_files,
+        notes,
+        warnings,
+        error: None,
+        binary_path: binary_display,
+        server_command,
+        raw_report: serde_json::json!({
+            "newlyEnabledPlugins": newly_enabled,
+            "probe": probe_report,
+        }),
+    })
+}
+
+#[tauri::command]
+async fn ue_mcp_setup_project(request: UeMcpSetupRequest) -> Result<UeMcpSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || ue_mcp_setup_project_blocking(request))
+        .await
+        .map_err(|e| format!("UE MCP 安装任务失败: {e}"))?
 }
 
 const WORKSPACE_CHANGE_LINE_LIMIT: usize = 320;
@@ -7289,6 +8153,33 @@ fn codex_status_success(status: &str) -> bool {
     )
 }
 
+/// Extract the cumulative token usage from a claude `stream-json` event. The
+/// `result` event nests it under `/usage`, while `assistant` events carry it on
+/// `/message/usage`. Either object includes `input_tokens`, `output_tokens` and
+/// the `cache_read_input_tokens` / `cache_creation_input_tokens` cache counters.
+fn claude_message_usage(event: &serde_json::Value) -> Option<serde_json::Value> {
+    let usage = event
+        .get("usage")
+        .or_else(|| event.pointer("/message/usage"))?;
+    if !usage.is_object() {
+        return None;
+    }
+    // Ignore empty/zeroed usage objects so we don't clobber a real snapshot
+    // with a placeholder that would render as 0%.
+    let has_tokens = [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ]
+    .iter()
+    .any(|key| usage.get(*key).and_then(|v| v.as_u64()).is_some_and(|n| n > 0));
+    if !has_tokens {
+        return None;
+    }
+    Some(usage.clone())
+}
+
 fn codex_last_message_ready(path: &std::path::Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -7644,6 +8535,11 @@ async fn ai_cli(
         let codex_turn_status_reader = Arc::clone(&codex_turn_status);
         let codex_usage = Arc::new(Mutex::new(None::<serde_json::Value>));
         let codex_usage_reader = Arc::clone(&codex_usage);
+        // Claude's stream-json reports cumulative token usage (including cache
+        // read/creation hits) on assistant/result events. Capture it so the
+        // status bar can show the real cache percentage instead of `--`.
+        let claude_usage = Arc::new(Mutex::new(None::<serde_json::Value>));
+        let claude_usage_reader = Arc::clone(&claude_usage);
         let codex_streamed_output = Arc::new(Mutex::new(String::new()));
         let codex_streamed_output_reader = Arc::clone(&codex_streamed_output);
         let stdout_activity = Arc::clone(&last_activity);
@@ -7774,6 +8670,15 @@ async fn ai_cli(
                             }
                         }
                         Some("assistant") => {
+                            // Capture per-turn usage as a fallback; the terminal
+                            // `result` event usually carries the authoritative
+                            // cumulative figure but some CLI versions only report
+                            // it on assistant messages.
+                            if let Some(usage) = claude_message_usage(&v) {
+                                if let Ok(mut current) = claude_usage_reader.lock() {
+                                    *current = Some(usage);
+                                }
+                            }
                             if let Some(content) =
                                 v.pointer("/message/content").and_then(|c| c.as_array())
                             {
@@ -7895,6 +8800,15 @@ async fn ai_cli(
                         Some("result") => {
                             if let Some(r) = v.get("result").and_then(|t| t.as_str()) {
                                 result = r.to_string();
+                            }
+                            // The terminal `result` event carries the final
+                            // cumulative usage (input/output + cache_read/creation).
+                            // Prefer it over per-assistant snapshots.
+                            if let Some(usage) = claude_message_usage(&v) {
+                                if let Ok(mut current) = claude_usage_reader.lock() {
+                                    *current = Some(usage.clone());
+                                }
+                                emit_usage(&app2, &run2, &usage);
                             }
                         }
                         _ => {}
@@ -8087,7 +9001,15 @@ async fn ai_cli(
         match wait_result {
             Err(err) => Err(append_cli_error_context(err, &output, &stderr)),
             Ok(WaitOutcome::Exited(status)) if status.success() => {
-                Ok(ai_cli_result(output, &codex_usage))
+                // Codex completions come through the dedicated outcomes above; a
+                // plain process exit is the claude/gemini path, so prefer the
+                // claude usage snapshot (falls back to codex for safety).
+                let usage = if claude_usage.lock().ok().is_some_and(|u| u.is_some()) {
+                    &claude_usage
+                } else {
+                    &codex_usage
+                };
+                Ok(ai_cli_result(output, usage))
             }
             Ok(WaitOutcome::Exited(status)) => {
                 let code = status.code().unwrap_or(-1);
@@ -8119,6 +9041,157 @@ async fn ai_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        // sha256("") and sha256("abc") known vectors.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn ue_mcp_parse_engine_version_handles_lines_and_guids() {
+        assert_eq!(ue_mcp_parse_engine_version("5.3"), Some((5, 3)));
+        assert_eq!(ue_mcp_parse_engine_version("4.25"), Some((4, 25)));
+        assert_eq!(ue_mcp_parse_engine_version("4"), Some((4, 0)));
+        assert_eq!(ue_mcp_parse_engine_version(" 5.4.1 "), Some((5, 4)));
+        // Source builds use a GUID association and have no numeric version.
+        assert_eq!(
+            ue_mcp_parse_engine_version("{0557D9C8-4D9D...}"),
+            None
+        );
+        assert_eq!(ue_mcp_parse_engine_version(""), None);
+    }
+
+    #[test]
+    fn ue_mcp_enable_uproject_plugins_is_idempotent_and_merges() {
+        let dir = std::env::temp_dir().join(format!(
+            "fuc-ue-uproject-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uproject = dir.join("Game.uproject");
+        std::fs::write(
+            &uproject,
+            r#"{
+  "FileVersion": 3,
+  "EngineAssociation": "5.3",
+  "Plugins": [
+    { "Name": "RemoteControl", "Enabled": false },
+    { "Name": "ExistingOther", "Enabled": true }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let plugins = ["RemoteControl", "EditorScriptingUtilities", "PythonScriptPlugin"];
+        let first = ue_mcp_enable_uproject_plugins(&uproject, &plugins).unwrap();
+        // RemoteControl flips false->true; the other two are appended.
+        assert!(first.contains(&"RemoteControl".to_string()));
+        assert!(first.contains(&"EditorScriptingUtilities".to_string()));
+        assert!(first.contains(&"PythonScriptPlugin".to_string()));
+
+        // Existing unrelated plugin is preserved.
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&uproject).unwrap()).unwrap();
+        let names: Vec<String> = doc["Plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["Name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"ExistingOther".to_string()));
+        assert!(doc["Plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["Name"].as_str() != Some("RemoteControl")
+                || p["Enabled"].as_bool() == Some(true)));
+
+        // Second run is a no-op (already enabled).
+        let second = ue_mcp_enable_uproject_plugins(&uproject, &plugins).unwrap();
+        assert!(second.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ue_mcp_remote_control_config_is_idempotent_and_version_aware() {
+        let dir = std::env::temp_dir().join(format!(
+            "fuc-ue-rc-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Modern line (5.x): writes the modern startup CVars.
+        let m1 = ue_mcp_write_remote_control_config(&dir, Some((5, 3))).unwrap();
+        assert!(m1.is_some());
+        let ini = std::fs::read_to_string(dir.join("Config/DefaultEngine.ini")).unwrap();
+        assert!(ini.contains("FreeUltraCode: Unreal MCP RemoteControl auto-start"));
+        assert!(ini.contains("WebControl.EnableServerOnStartup 1"));
+        // Second run is a no-op (managed marker already present).
+        let m2 = ue_mcp_write_remote_control_config(&dir, Some((5, 3))).unwrap();
+        assert!(m2.is_none());
+
+        // Legacy 4.25 in a fresh dir emits the StartServer console command too.
+        let legacy_dir = dir.join("legacy");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        ue_mcp_write_remote_control_config(&legacy_dir, Some((4, 25))).unwrap();
+        let legacy_ini =
+            std::fs::read_to_string(legacy_dir.join("Config/DefaultEngine.ini")).unwrap();
+        assert!(legacy_ini.contains("WebControl.StartServer"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ue_mcp_project_mcp_json_merges_and_preserves_other_servers() {
+        let dir = std::env::temp_dir().join(format!(
+            "fuc-ue-mcpjson-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{ "mcpServers": { "other": { "command": "x", "args": [] } } }"#,
+        )
+        .unwrap();
+
+        let marker = ue_mcp_write_project_mcp_json(&dir, "C:/tools/ue-mcp.exe").unwrap();
+        assert!(marker.is_some());
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".mcp.json")).unwrap()).unwrap();
+        // Existing server preserved + ours added.
+        assert!(doc["mcpServers"]["other"].is_object());
+        assert_eq!(
+            doc["mcpServers"][UE_MCP_SERVER_ID]["command"].as_str(),
+            Some("C:/tools/ue-mcp.exe")
+        );
+
+        // Idempotent: re-running with the same command is a no-op.
+        let again = ue_mcp_write_project_mcp_json(&dir, "C:/tools/ue-mcp.exe").unwrap();
+        assert!(again.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ue_mcp_suggestion_uses_stable_server_id() {
+        let servers = project_suggested_mcp_servers("unreal");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, UE_MCP_SERVER_ID);
+        assert_eq!(servers[0].transport, "stdio");
+        assert!(servers[0].requires_user_approval);
+    }
 
     #[test]
     fn preview_image_mime_supports_common_web_formats() {
@@ -8325,6 +9398,37 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(4)
         );
+    }
+
+    #[test]
+    fn claude_message_usage_reads_result_cache_fields() {
+        let result = serde_json::json!({
+            "type": "result",
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 80
+            }
+        });
+        let usage = claude_message_usage(&result).expect("result usage");
+        assert_eq!(usage["cache_read_input_tokens"], 800);
+        assert_eq!(usage["cache_creation_input_tokens"], 80);
+
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": { "usage": { "input_tokens": 10, "output_tokens": 2 } }
+        });
+        let usage = claude_message_usage(&assistant).expect("assistant usage");
+        assert_eq!(usage["input_tokens"], 10);
+
+        // Zeroed/empty usage is ignored so it never clobbers a real snapshot.
+        let empty = serde_json::json!({
+            "type": "result",
+            "usage": { "input_tokens": 0, "output_tokens": 0 }
+        });
+        assert!(claude_message_usage(&empty).is_none());
+        assert!(claude_message_usage(&serde_json::json!({ "type": "result" })).is_none());
     }
 
     #[test]
@@ -8795,6 +9899,9 @@ pub fn run() {
             ai_cli,
             cancel_ai_cli,
             slash_catalog,
+            refresh_slash_catalog,
+            skill_install_targets,
+            install_skill_from_url,
             scan_model_clis,
             validate_cli_path,
             validate_shell_path,
@@ -8809,6 +9916,8 @@ pub fn run() {
             list_workspace_dir,
             project_environment_scan,
             project_mcp_probe,
+            ue_mcp_ensure_binary,
+            ue_mcp_setup_project,
             workspace_changes_baseline,
             workspace_changes,
             workspace_changes_cached,

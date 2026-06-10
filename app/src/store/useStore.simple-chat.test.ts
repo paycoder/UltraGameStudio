@@ -1875,6 +1875,99 @@ describe('simple-workflow chat mode', () => {
     );
   });
 
+  it('keeps appended translation notes after switching away and back', async () => {
+    window.localStorage.clear();
+    await historyStore.ready();
+    const workspace = await historyStore.resolveWorkspaceByPath('');
+    resetStore(simpleBlueprint('Simple chat'));
+    const workflowA = simpleBlueprint('Chat A');
+    const sessionA = await historyStore.createSession({
+      workspaceId: workspace.id,
+      isWorkflow: true,
+      workflow: workflowA,
+      title: 'Chat A',
+    });
+    const sessionB = await historyStore.createSession({
+      workspaceId: workspace.id,
+      isWorkflow: true,
+      workflow: simpleBlueprint('Chat B'),
+      title: 'Chat B',
+    });
+    const sessionTree = {
+      [workspace.id]: [
+        {
+          id: sessionA.id,
+          workspaceId: workspace.id,
+          title: sessionA.title,
+          createdAt: sessionA.createdAt,
+          updatedAt: sessionA.updatedAt,
+          isWorkflow: true,
+          messageCount: 0,
+          simple: true,
+        },
+        {
+          id: sessionB.id,
+          workspaceId: workspace.id,
+          title: sessionB.title,
+          createdAt: sessionB.createdAt,
+          updatedAt: sessionB.updatedAt,
+          isWorkflow: true,
+          messageCount: 0,
+          simple: true,
+        },
+      ],
+    };
+    useStore.setState({
+      historyReady: true,
+      activeWorkspaceId: workspace.id,
+      activeSessionId: sessionA.id,
+      workspaces: [workspace],
+      sessions: sessionTree[workspace.id],
+      sessionTree,
+      workflow: workflowA,
+      locale: 'zh-CN',
+    });
+    mockDirectRoute();
+    gatewayMocks.completeGatewayText.mockResolvedValue('Original answer.');
+
+    useStore.getState().sendPrompt('Translate this later');
+    await waitFor(
+      () =>
+        !useStore.getState().aiStreaming &&
+        useStore
+          .getState()
+          .messages.some((m) => m.role === 'assistant' && m.text.includes('Original answer')),
+      'simple chat answer',
+    );
+
+    useStore
+      .getState()
+      .appendChatNote('🌐 翻译为 简体中文\n\n原始回答。');
+    await waitFor(async () => {
+      const record = await historyStore.getSession(workspace.id, sessionA.id);
+      return record?.messages.some((message) =>
+        message.text.includes('翻译为 简体中文'),
+      ) === true;
+    }, 'translation note persistence');
+
+    useStore.getState().selectSession(sessionB.id, workspace.id);
+    await waitFor(
+      () => useStore.getState().activeSessionId === sessionB.id,
+      'session B activation',
+    );
+    useStore.getState().selectSession(sessionA.id, workspace.id);
+    await waitFor(
+      () => useStore.getState().activeSessionId === sessionA.id,
+      'session A reactivation',
+    );
+
+    expect(
+      useStore.getState().messages.some((message) =>
+        message.text.includes('翻译为 简体中文'),
+      ),
+    ).toBe(true);
+  });
+
   it('keeps a deleted simple chat turn deleted after switching sessions', async () => {
     window.localStorage.clear();
     await historyStore.ready();

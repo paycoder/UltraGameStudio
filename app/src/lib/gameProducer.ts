@@ -332,7 +332,7 @@ export function buildProducerPrompt(
   if (channels?.music)
     channelLines.push('· 需要 BGM/音效/环境音时，产出音乐提示词并建议用户用 /music。');
   if (channels?.threeD)
-    channelLines.push('· 需要 3D 道具/角色/场景网格时，产出建模提示词并建议用户用 /3d。');
+    channelLines.push('· 需要 3D 道具/角色/场景网格时，产出建模提示词并建议用户用 /mesh-mode-start。');
 
   return [
     '',

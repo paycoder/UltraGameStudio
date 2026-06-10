@@ -102,6 +102,11 @@ type ComposerDropProps = {
 
 type ProjectEntryDragProps = {
   onDragStart?: (event: { dataTransfer: DataTransfer }) => void;
+  onDrag?: (event: {
+    dataTransfer: DataTransfer;
+    clientX: number;
+    clientY: number;
+  }) => void;
   onDragEnd?: (event: { clientX: number; clientY: number }) => void;
 };
 
@@ -486,6 +491,63 @@ describe('AIDock project file drag', () => {
       });
 
       expect(input.value).toBe(dragEntry.path);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it('shows a copy drop effect while project files are dragged over the AI input', async () => {
+    resetStore({ withWorkspace: true });
+    const view = await renderProjectDragHarness();
+
+    try {
+      const source = Array.from(
+        view.container.querySelectorAll<HTMLButtonElement>('button[title]'),
+      ).find((button) => button.title === dragEntry.path);
+      if (!source) throw new Error('Missing project tree source entry');
+
+      const card = composerCard(view.container);
+      Object.defineProperty(card, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          left: 0,
+          top: 0,
+          right: 800,
+          bottom: 300,
+          width: 800,
+          height: 300,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const sourceProps = reactProps<ProjectEntryDragProps>(source);
+      sourceProps.onDragStart?.({ dataTransfer: plainDataTransfer() });
+
+      const overInputTransfer = plainDataTransfer();
+      await act(async () => {
+        sourceProps.onDrag?.({
+          dataTransfer: overInputTransfer,
+          clientX: 40,
+          clientY: 40,
+        });
+      });
+
+      expect(overInputTransfer.dropEffect).toBe('copy');
+      expect(card.className).toContain('fuc-ai-input--drop');
+
+      const outsideTransfer = plainDataTransfer();
+      await act(async () => {
+        sourceProps.onDrag?.({
+          dataTransfer: outsideTransfer,
+          clientX: 900,
+          clientY: 400,
+        });
+      });
+
+      expect(outsideTransfer.dropEffect).toBe('none');
+      expect(card.className).not.toContain('fuc-ai-input--drop');
     } finally {
       await view.cleanup();
     }

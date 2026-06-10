@@ -76,6 +76,25 @@ export interface SlashCatalogSnapshot {
   error?: string | null;
 }
 
+export interface SkillInstallTarget {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  skillCount: number;
+  isDefault: boolean;
+}
+
+export interface InstalledSkill {
+  name: string;
+  slug: string;
+  targetId: string;
+  path: string;
+  skillFile: string;
+  sourceUrl?: string | null;
+  overwritten: boolean;
+}
+
 export interface UltracodeRunOptions {
   cwd?: string;
   extraWorkspacePaths?: string[];
@@ -205,6 +224,48 @@ export interface ProjectMcpProbeResult {
   message: string;
   toolsCount?: number | null;
   checkedAtMs: number;
+}
+
+/** Stable server id shared by one-click install + the recommended UE suggestion. */
+export const UE_MCP_SERVER_ID = 'ue-mcp-for-all-versions';
+
+/** Result of ensuring the pinned UE MCP binary is downloaded + sha256-verified. */
+export interface UeMcpBinaryStatus {
+  serverId: string;
+  version: string;
+  path: string;
+  available: boolean;
+  downloaded: boolean;
+  sha256: string;
+  source: string;
+  supportedPlatform: boolean;
+  message: string;
+}
+
+export interface UeMcpSetupRequest {
+  rootPath: string;
+  serverCommand?: string;
+  enablePython?: boolean;
+  writeMcpConfig?: boolean;
+  dryRun?: boolean;
+}
+
+/** Machine-readable report from `ue-mcp-for-all-versions --setup-project`. */
+export interface UeMcpSetupResult {
+  ok: boolean;
+  changed: boolean;
+  dryRun: boolean;
+  uprojectPath?: string | null;
+  projectDir?: string | null;
+  engineAssociation?: string | null;
+  configuredPlugins: string[];
+  changedFiles: string[];
+  notes: string[];
+  warnings: string[];
+  error?: string | null;
+  binaryPath: string;
+  serverCommand: string;
+  rawReport: unknown;
 }
 
 export type WorkspaceChangeLineKind =
@@ -825,6 +886,34 @@ export async function probeProjectMcpServer(
   });
 }
 
+/**
+ * Ensure the pinned Unreal MCP binary (ue-mcp-for-all-versions) is downloaded
+ * into the global tools cache and sha256-verified. Idempotent: returns the
+ * cached binary when it is already present and valid. Desktop + Windows only.
+ */
+export async function ueMcpEnsureBinary(): Promise<UeMcpBinaryStatus> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<UeMcpBinaryStatus>('ue_mcp_ensure_binary');
+}
+
+/**
+ * Run the UE MCP binary's one-click `--setup-project`: enables RemoteControl /
+ * Python plugins, writes the engine-version-correct RemoteControl config, and
+ * (unless disabled) merges the project `.mcp.json`. Returns the parsed report.
+ */
+export async function ueMcpSetupProject(
+  request: UeMcpSetupRequest,
+): Promise<UeMcpSetupResult> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<UeMcpSetupResult>('ue_mcp_setup_project', { request });
+}
+
 /** Ensure this session has a filesystem baseline. No VCS dependency. */
 export async function ensureWorkspaceChangesBaseline(
   rootPath: string,
@@ -1055,6 +1144,47 @@ export async function slashCatalog(): Promise<SlashCatalogSnapshot> {
   }
   const invoke = await getInvoke();
   return invoke<SlashCatalogSnapshot>('slash_catalog');
+}
+
+/** Force a desktop backend slash command / skill rescan. */
+export async function refreshSlashCatalog(): Promise<SlashCatalogSnapshot> {
+  if (!tauriAvailable()) {
+    return { scannedAtMs: Date.now(), ready: true, entries: [] };
+  }
+  const invoke = await getInvoke();
+  return invoke<SlashCatalogSnapshot>('refresh_slash_catalog');
+}
+
+/** List supported skill installation targets. Desktop-only. */
+export async function skillInstallTargets(): Promise<SkillInstallTarget[]> {
+  if (!tauriAvailable()) {
+    return [];
+  }
+  const invoke = await getInvoke();
+  return invoke<SkillInstallTarget[]>('skill_install_targets');
+}
+
+/** Download a SKILL.md into a local skill root and refresh the slash catalog. */
+export async function installSkillFromUrl(params: {
+  url: string;
+  name: string;
+  slug: string;
+  targetId: string;
+  overwrite?: boolean;
+  sourceUrl?: string | null;
+}): Promise<InstalledSkill> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<InstalledSkill>('install_skill_from_url', {
+    url: params.url,
+    name: params.name,
+    slug: params.slug,
+    targetId: params.targetId,
+    overwrite: params.overwrite ?? false,
+    sourceUrl: params.sourceUrl ?? null,
+  });
 }
 
 /** Scan PATH for supported local model CLIs. Desktop-only. */

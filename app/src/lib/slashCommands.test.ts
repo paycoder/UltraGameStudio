@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GAME_PROJECT_COMMAND_NAMES,
   PROJECT_COMMAND_NAMES,
   STATIC_SLASH_ENTRIES,
   buildSlashSuggestions,
+  isGameProjectCommandName,
   isProjectCommandName,
   slashEntrySourceAdapter,
   slashText,
@@ -102,6 +104,9 @@ describe('project command allowlist', () => {
   it('matches names case-insensitively and trims whitespace', () => {
     expect(isProjectCommandName('/ultracode')).toBe(true);
     expect(isProjectCommandName('  /Deep-Research ')).toBe(true);
+    expect(isGameProjectCommandName('/game')).toBe(true);
+    expect(isGameProjectCommandName('  /MESH-MODE-START ')).toBe(true);
+    expect(isProjectCommandName('/game')).toBe(false);
     expect(isProjectCommandName('/help')).toBe(false);
     expect(isProjectCommandName('/plan')).toBe(false);
   });
@@ -113,6 +118,9 @@ describe('project command allowlist', () => {
     for (const name of PROJECT_COMMAND_NAMES) {
       expect(staticNames.has(name.toLowerCase())).toBe(true);
     }
+    for (const name of GAME_PROJECT_COMMAND_NAMES) {
+      expect(staticNames.has(name.toLowerCase())).toBe(true);
+    }
   });
 
   it('excludes generic prompt shortcuts from the project list', () => {
@@ -122,6 +130,7 @@ describe('project command allowlist', () => {
     const names = projectOnly.map((item) => item.name);
     expect(names).toContain('/ultracode');
     expect(names).toContain('/deep-research');
+    expect(names).not.toContain('/game');
     expect(names).not.toContain('/help');
     expect(names).not.toContain('/review');
   });

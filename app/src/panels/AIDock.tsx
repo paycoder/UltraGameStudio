@@ -144,11 +144,15 @@ import {
   type WorkspaceTreeEntry,
 } from '@/lib/tauri';
 import {
+  applyProjectFileDragDropEffect,
   clearProjectFileDragData,
   hasProjectFileDragData,
   PROJECT_FILE_DRAG_END_EVENT,
+  PROJECT_FILE_DRAG_MOVE_EVENT,
   type ProjectFileDragEndDetail,
+  type ProjectFileDragMoveDetail,
   projectFilePathsFromDataTransfer,
+  setProjectFileDragAccepted,
 } from '@/lib/projectFileDrag';
 import {
   canRefreshFreeChannelModels,
@@ -3064,6 +3068,10 @@ export default function AIDock({
       if (isReadOnly || (!hasProjectPaths && !hasFiles)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'copy';
+      if (hasProjectPaths) {
+        setProjectFileDragAccepted(true);
+        applyProjectFileDragDropEffect(event.dataTransfer);
+      }
       setDropActive(true);
     },
     [isReadOnly],
@@ -3079,6 +3087,7 @@ export default function AIDock({
         return;
       }
       setDropActive(false);
+      setProjectFileDragAccepted(false);
     },
     [],
   );
@@ -3102,6 +3111,7 @@ export default function AIDock({
         event.preventDefault();
         event.stopPropagation();
         setDropActive(false);
+        setProjectFileDragAccepted(false);
         clearProjectFileDragData();
         if (projectPaths.length > 0) {
           closeComposerSuggestions();
@@ -3113,10 +3123,23 @@ export default function AIDock({
       event.preventDefault();
       event.stopPropagation();
       setDropActive(false);
+      setProjectFileDragAccepted(false);
       closeComposerSuggestions();
       insertFilePaths(pathsFromDataTransfer(event.dataTransfer), targetSelection);
     },
     [closeComposerSuggestions, insertFilePaths, isReadOnly],
+  );
+
+  const updateProjectDragFeedbackAtPoint = useCallback(
+    (point: { clientX: number; clientY: number }): boolean => {
+      const el = inputDropRef.current ?? inputRef.current;
+      const accepted =
+        !isReadOnly && !!el && clientPointInsideElement(point, el);
+      setProjectFileDragAccepted(accepted);
+      setDropActive(accepted);
+      return accepted;
+    },
+    [isReadOnly],
   );
 
   /** Clamp the input width to keep both panes usable within the dock. */
@@ -3354,10 +3377,48 @@ export default function AIDock({
   }, [insertFilePaths, isReadOnly]);
 
   useEffect(() => {
+    const onProjectFileDragMove = (event: Event) => {
+      const { detail } = event as CustomEvent<ProjectFileDragMoveDetail>;
+      if (!detail?.paths?.length) return;
+      updateProjectDragFeedbackAtPoint(detail);
+    };
+
+    const onProjectFileDragOver = (event: DragEvent) => {
+      if (!event.dataTransfer || !hasProjectFileDragData(event.dataTransfer)) {
+        return;
+      }
+
+      const accepted = updateProjectDragFeedbackAtPoint(event);
+      if (!accepted) return;
+
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      applyProjectFileDragDropEffect(event.dataTransfer);
+    };
+
+    window.addEventListener(
+      PROJECT_FILE_DRAG_MOVE_EVENT,
+      onProjectFileDragMove,
+    );
+    window.addEventListener('dragenter', onProjectFileDragOver, true);
+    window.addEventListener('dragover', onProjectFileDragOver, true);
+    return () => {
+      window.removeEventListener(
+        PROJECT_FILE_DRAG_MOVE_EVENT,
+        onProjectFileDragMove,
+      );
+      window.removeEventListener('dragenter', onProjectFileDragOver, true);
+      window.removeEventListener('dragover', onProjectFileDragOver, true);
+      setProjectFileDragAccepted(false);
+    };
+  }, [updateProjectDragFeedbackAtPoint]);
+
+  useEffect(() => {
     const onProjectFileDragEnd = (event: Event) => {
       const { detail } = event as CustomEvent<ProjectFileDragEndDetail>;
       const el = inputDropRef.current ?? inputRef.current;
       setDropActive(false);
+      setProjectFileDragAccepted(false);
 
       if (!el || isReadOnly || !detail?.paths?.length) return;
       if (!clientPointInsideElement(detail, el)) return;
@@ -4238,10 +4299,7 @@ export default function AIDock({
           <div
             ref={streamRef}
             onScroll={handleStreamScroll}
-            className={
-              'fuc-ai-return-stream h-full min-h-0 overflow-y-auto p-3 ' +
-              (isChat ? 'pr-10' : '')
-            }
+            className="fuc-ai-return-stream h-full min-h-0 overflow-y-auto p-3"
           >
             {messages.length === 0 ? (
               <div

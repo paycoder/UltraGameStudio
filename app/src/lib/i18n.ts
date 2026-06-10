@@ -589,6 +589,7 @@ const UI_FULL = {
     'settings.tabs.gameExperts': '游戏专家',
     'settings.tabs.freeChannels': '免费渠道',
     'settings.tabs.consensus': '共识',
+    'settings.tabs.pluginStore': '插件仓库',
     'settings.tabs.commands': '命令',
     'settings.tabs.shortcuts': '快捷键',
     'settings.tabs.appearance': '外观',
@@ -936,6 +937,33 @@ const UI_FULL = {
     'settings.languageDescription': '界面文案、提示词标签和内置选项会跟随这个语言显示。',
     'settings.autoTranslateLabel': '提示词自动翻译',
     'settings.autoTranslateDescription': '开启后，保存一种语言的提示词时会自动补齐其他语言版本。',
+    'settings.translationProviderLabel': '翻译服务',
+    'settings.translationProviderDescription':
+      '选择界面内按需翻译使用的公共翻译渠道。默认使用 Google；国内网络不可达时可切换到百度翻译。',
+    'settings.translationProvider.google': 'Google 翻译',
+    'settings.translationProvider.googleShort': '默认',
+    'settings.translationProvider.googleHint':
+      '使用 Google 免费网页翻译接口，无需密钥；部分中国区网络可能无法连接，会自动尝试可用回退。',
+    'settings.translationProvider.baidu': '百度翻译',
+    'settings.translationProvider.baiduShort': '中国区',
+    'settings.translationProvider.baiduHint':
+      '中国区官方渠道。百度翻译开放平台通用文本翻译 API 有免费额度，需要填写自己的 APP ID 和密钥。',
+    'settings.translationProvider.mymemory': 'MyMemory',
+    'settings.translationProvider.mymemoryShort': '免密',
+    'settings.translationProvider.mymemoryHint':
+      '公共免密翻译接口，适合作为轻量回退；长文本和高频请求可能受公共额度限制。',
+    'settings.translationProvider.libretranslate': 'LibreTranslate',
+    'settings.translationProvider.libretranslateShort': '开源',
+    'settings.translationProvider.libretranslateHint':
+      '开源翻译接口，可使用公共实例或自托管服务；部分实例可能需要 API Key。',
+    'settings.translationBaiduAppId': '百度 APP ID',
+    'settings.translationBaiduSecretKey': '百度密钥',
+    'settings.translationLibreBaseUrl': 'LibreTranslate Base URL',
+    'settings.translationLibreApiKey': 'LibreTranslate API Key',
+    'settings.translationSecretPlaceholder': '粘贴密钥',
+    'settings.translationOptionalKey': '可选 API Key',
+    'settings.translationCredentialHint':
+      '仅保存在本机 localStorage；这些凭据不会写入 Workflow 文件。',
     'settings.cliLabel': 'CLI',
     'settings.cliDescription': '选择默认用于本地执行的模型 CLI。',
     'settings.shellLabel': '启动 Shell',
@@ -983,6 +1011,9 @@ const UI_FULL = {
     'settings.commandsSearchPlaceholder': '搜索命令或用途…',
     'settings.commandsEmpty': '没有匹配的命令。',
     'settings.commands.copy': '复制命令名',
+    'settings.pluginStoreTitle': '插件仓库',
+    'settings.pluginStoreDescription':
+      '搜索 OpenAI Skills、Claude Code 插件市场、Codex 社区插件索引和 MCP Registry；可信的单个 SKILL.md 可以直接安装到本机 skill 目录。',
     'settings.shortcutsComposerNewlineTitle': 'AI 输入换行',
     'settings.shortcutsComposerNewlineDescription': '在 AI 输入框中插入换行，适合编写多段提示词。',
     'settings.shortcutsCloseModalTitle': '关闭弹窗',
@@ -1429,6 +1460,7 @@ const UI_FULL = {
     'settings.tabs.gameExperts': 'Game Experts',
     'settings.tabs.freeChannels': 'Free Channels',
     'settings.tabs.consensus': 'Consensus',
+    'settings.tabs.pluginStore': 'Plugin Store',
     'settings.tabs.commands': 'Commands',
     'settings.tabs.shortcuts': 'Shortcuts',
     'settings.tabs.appearance': 'Appearance',
@@ -1778,6 +1810,33 @@ const UI_FULL = {
     'settings.languageDescription': 'UI strings, prompt labels, and built-in option names follow this language.',
     'settings.autoTranslateLabel': 'Auto-translate prompts',
     'settings.autoTranslateDescription': 'When enabled, saving a prompt in one language automatically fills the other language versions.',
+    'settings.translationProviderLabel': 'Translation service',
+    'settings.translationProviderDescription':
+      'Choose the public translation provider used by on-demand UI translation. Google is the default; switch to Baidu when Google is unreachable in China.',
+    'settings.translationProvider.google': 'Google Translate',
+    'settings.translationProvider.googleShort': 'Default',
+    'settings.translationProvider.googleHint':
+      'Uses the free Google web translation endpoint with no key required. Some China networks may not reach it, so available fallbacks are tried automatically.',
+    'settings.translationProvider.baidu': 'Baidu Translate',
+    'settings.translationProvider.baiduShort': 'China',
+    'settings.translationProvider.baiduHint':
+      'Official China-region provider. Baidu Translate Open Platform general text translation has free quota, but requires your own APP ID and secret key.',
+    'settings.translationProvider.mymemory': 'MyMemory',
+    'settings.translationProvider.mymemoryShort': 'No key',
+    'settings.translationProvider.mymemoryHint':
+      'Public no-key translation endpoint. Useful as a lightweight fallback; long text and high-frequency usage may hit shared limits.',
+    'settings.translationProvider.libretranslate': 'LibreTranslate',
+    'settings.translationProvider.libretranslateShort': 'Open',
+    'settings.translationProvider.libretranslateHint':
+      'Open-source translation API. Use a public instance or your own service; some instances require an API key.',
+    'settings.translationBaiduAppId': 'Baidu APP ID',
+    'settings.translationBaiduSecretKey': 'Baidu secret key',
+    'settings.translationLibreBaseUrl': 'LibreTranslate Base URL',
+    'settings.translationLibreApiKey': 'LibreTranslate API Key',
+    'settings.translationSecretPlaceholder': 'Paste secret key',
+    'settings.translationOptionalKey': 'Optional API Key',
+    'settings.translationCredentialHint':
+      'Stored only in localStorage on this device; credentials are not written into workflow files.',
     'settings.cliLabel': 'CLI',
     'settings.cliDescription': 'Choose the default model CLI used for local execution.',
     'settings.shellLabel': 'Launch shell',
@@ -1814,6 +1873,9 @@ const UI_FULL = {
     'settings.commandsSearchPlaceholder': 'Search commands or use cases…',
     'settings.commandsEmpty': 'No matching commands.',
     'settings.commands.copy': 'Copy command name',
+    'settings.pluginStoreTitle': 'Plugin Store',
+    'settings.pluginStoreDescription':
+      'Search OpenAI Skills, the Claude Code plugin marketplace, Codex community plugin indexes, and the MCP Registry. Trusted single SKILL.md files can be installed into a local skill directory.',
     'settings.shortcutsComposerSendTitle': 'Send AI input',
     'settings.shortcutsComposerSendDescription': 'Submit the current content from the AI input box at the bottom of the center workspace.',
     'settings.shortcutsComposerNewlineTitle': 'New line in AI input',

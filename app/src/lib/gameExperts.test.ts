@@ -240,7 +240,7 @@ describe('game expert asset channel awareness', () => {
       enabledSettings,
       { image: false, music: false, threeD: true },
     );
-    expect(prompt).toContain('/3d');
+    expect(prompt).toContain('/mesh-mode-start');
   });
 
   it('only surfaces channels relevant to the selected experts', () => {

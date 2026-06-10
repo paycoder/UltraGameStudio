@@ -10,15 +10,21 @@ import {
   Bone,
   Box,
   Check,
+  Copy,
+  Download,
   FileText,
   Gamepad2,
   Info,
   Plus,
   RefreshCw,
+  Rocket,
+  Search,
   Settings as SettingsIcon,
+  SlashSquare,
   SlidersHorizontal,
   Terminal,
   Trash2,
+  TriangleAlert,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -29,10 +35,17 @@ import {
   projectHealth,
   projectSettingsFromMetadata,
   projectSettingsPatch,
+  isGameProjectEngine,
   settingsWithDetectedGameFeatures,
   type ProjectMcpServerConfig,
   type ProjectSettings,
 } from '@/lib/projectSettings';
+import {
+  GAME_PROJECT_COMMAND_NAMES,
+  buildSlashSuggestions,
+  isGameProjectCommandName,
+  type SlashSuggestion,
+} from '@/lib/slashCommands';
 import {
   loadThreeDGenerationSettings,
   saveThreeDGenerationSettings,
@@ -41,18 +54,39 @@ import {
   openLocalPath,
   probeProjectMcpServer,
   scanProjectEnvironment,
+  ueMcpEnsureBinary,
+  ueMcpSetupProject,
+  tauriAvailable,
+  UE_MCP_SERVER_ID,
   type ProjectEnvironmentScan,
   type ProjectMcpProbeResult,
+  type UeMcpSetupResult,
 } from '@/lib/tauri';
 import { historyStore } from '@/store/history/store';
 import type { WorkspaceRecord, WorkspaceSummary } from '@/store/history/types';
 import { useStore } from '@/store/useStore';
+import {
+  ThreeDGenerationSettingsPanel,
+  RiggingSettingsPanel,
+  GameExpertSettingsPanel,
+} from '@/panels/SettingsModal';
 
-type ProjectSettingsTab = 'overview' | 'game' | 'mcp' | 'skills' | 'automation';
+type ProjectSettingsTab =
+  | 'overview'
+  | 'mesh'
+  | 'rigging'
+  | 'gameExperts'
+  | 'commands'
+  | 'mcp'
+  | 'skills'
+  | 'automation';
 
 const tabs: { id: ProjectSettingsTab; label: string; Icon: LucideIcon }[] = [
   { id: 'overview', label: '概览', Icon: Info },
-  { id: 'game', label: '游戏功能', Icon: Gamepad2 },
+  { id: 'mesh', label: 'Mesh 渠道', Icon: Box },
+  { id: 'rigging', label: '绑定渠道', Icon: Bone },
+  { id: 'gameExperts', label: '游戏专家', Icon: Gamepad2 },
+  { id: 'commands', label: '命令', Icon: SlashSquare },
   { id: 'mcp', label: 'MCP配置', Icon: Terminal },
   { id: 'skills', label: 'Skill', Icon: Box },
   { id: 'automation', label: '权限/自动化', Icon: SlidersHorizontal },
@@ -107,6 +141,29 @@ function syncProjectGameFeaturesToRuntime(settings: ProjectSettings): void {
   });
 }
 
+// Game-only tabs (Mesh / Rigging / Game Experts / Commands) only make sense for
+// recognized game engines (Unity / Unreal / Godot). For non-game projects they
+// stay hidden unless a feature was explicitly turned on for this project.
+function shouldShowGameFeatures(
+  settings: ProjectSettings,
+  scan: ProjectEnvironmentScan | null,
+): boolean {
+  const detectedEngine = scan?.engine.engine ?? settings.engine;
+  return (
+    isGameProjectEngine(detectedEngine) ||
+    settings.gameFeatures.meshGeneration ||
+    settings.gameFeatures.rigging ||
+    settings.gameFeatures.gameExperts
+  );
+}
+
+const GAME_FEATURE_TABS: ReadonlySet<ProjectSettingsTab> = new Set([
+  'mesh',
+  'rigging',
+  'gameExperts',
+  'commands',
+]);
+
 function fieldId(prefix: string, id: string): string {
   return `${prefix}-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
@@ -156,6 +213,127 @@ function ToggleRow({
   );
 }
 
+function ProjectCommandsSettings() {
+  const [query, setQuery] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const commands = useMemo(() => {
+    const order = new Map(
+      GAME_PROJECT_COMMAND_NAMES.map((name, index) => [name.toLowerCase(), index]),
+    );
+    return buildSlashSuggestions([], 'zh-CN')
+      .filter((item) => isGameProjectCommandName(item.name))
+      .sort(
+        (a, b) =>
+          (order.get(a.name.toLowerCase()) ?? Number.MAX_SAFE_INTEGER) -
+          (order.get(b.name.toLowerCase()) ?? Number.MAX_SAFE_INTEGER),
+      );
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return commands;
+    return commands.filter((item) => item.searchText.includes(q));
+  }, [commands, query]);
+
+  const copyName = (item: SlashSuggestion) => {
+    void navigator.clipboard?.writeText(item.name).then(
+      () => {
+        setCopiedId(item.id);
+        window.setTimeout(() => {
+          setCopiedId((current) => (current === item.id ? null : current));
+        }, 1500);
+      },
+      () => {},
+    );
+  };
+
+  return (
+    <div className="grid gap-4">
+      <section className="rounded-md border border-border bg-panel-2 p-4">
+        <div className="text-sm font-semibold text-fg">游戏命令</div>
+        <div className="mt-1 text-xs leading-relaxed text-fg-faint">
+          当前项目可用的游戏 slash command。非游戏项目不会显示此 tab。
+        </div>
+      </section>
+
+      <div className="relative">
+        <Search
+          size={14}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-faint"
+        />
+        <input
+          type="text"
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder="搜索命令或用途..."
+          className="w-full rounded-lg border border-border bg-bg-alt py-2 pl-9 pr-3 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none"
+        />
+      </div>
+
+      {filtered.length === 0 ? (
+        <p className="rounded-lg border border-border bg-bg-alt px-4 py-6 text-center text-xs text-fg-faint">
+          没有匹配的命令。
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((item) => (
+            <ProjectCommandRow
+              key={item.id}
+              item={item}
+              copied={copiedId === item.id}
+              onCopy={() => copyName(item)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectCommandRow({
+  item,
+  copied,
+  onCopy,
+}: {
+  item: SlashSuggestion;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="group grid gap-2 rounded-lg border border-border bg-bg-alt px-4 py-3 md:grid-cols-[minmax(10rem,16rem)_minmax(0,1fr)] md:items-start">
+      <div className="flex min-w-0 items-center gap-2">
+        <code className="truncate font-mono text-sm font-medium text-accent">
+          {item.name}
+        </code>
+        <button
+          type="button"
+          onClick={onCopy}
+          aria-label="复制命令名"
+          title="复制命令名"
+          className="ml-auto shrink-0 rounded p-1 text-fg-faint opacity-0 transition-opacity hover:text-fg focus:opacity-100 group-hover:opacity-100"
+        >
+          {copied ? (
+            <Check size={13} className="text-accent-2" />
+          ) : (
+            <Copy size={13} />
+          )}
+        </button>
+      </div>
+      <div className="min-w-0">
+        {item.label && item.label !== item.name && (
+          <div className="text-sm font-medium text-fg">{item.label}</div>
+        )}
+        {item.detail && (
+          <p className="mt-0.5 text-xs leading-relaxed text-fg-faint">
+            {item.detail}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProbeBadge({ result }: { result?: ProjectMcpProbeResult }) {
   if (!result) {
     return (
@@ -179,12 +357,145 @@ function ProbeBadge({ result }: { result?: ProjectMcpProbeResult }) {
   );
 }
 
+function UnrealMcpQuickSetup({
+  busy,
+  step,
+  result,
+  error,
+  onRun,
+  onOpenFile,
+}: {
+  busy: boolean;
+  step: string | null;
+  result: UeMcpSetupResult | null;
+  error: string | null;
+  onRun: () => void;
+  onOpenFile: (path: string) => void;
+}) {
+  const desktop = tauriAvailable();
+  const restartNeeded =
+    !!result?.ok &&
+    (result.changed ||
+      result.configuredPlugins.length > 0 ||
+      result.changedFiles.some((file) =>
+        /defaultengine\.ini|remotecontrol\.ini|\.uproject$/i.test(file),
+      ));
+  return (
+    <section className="grid gap-3 rounded-md border border-accent/40 bg-accent/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+            <Rocket size={16} className="text-accent" />
+            一键配置 Unreal MCP
+          </div>
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-fg-faint">
+            自动下载并校验版本无关的 Unreal MCP 服务（支持 UE 4.25–5.8），在 .uproject
+            中启用 RemoteControl / EditorScripting / Python 插件，写入 RemoteControl
+            随编辑器自启动的配置，并合并项目 .mcp.json、登记到本项目的 MCP
+            列表。全程无需手动操作。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={busy || !desktop}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent/20 px-3 py-2 text-xs font-semibold text-fg hover:bg-accent/30 disabled:opacity-50"
+        >
+          {busy ? (
+            <RefreshCw size={14} className="animate-spin" />
+          ) : (
+            <Download size={14} />
+          )}
+          {busy ? '配置中...' : '一键安装并配置'}
+        </button>
+      </div>
+
+      {!desktop ? (
+        <div className="rounded border border-border-soft bg-bg-alt px-3 py-2 text-[11px] text-fg-faint">
+          一键安装需要在桌面应用中运行（浏览器环境无法下载二进制或写入工程配置）。
+        </div>
+      ) : null}
+
+      {busy && step ? (
+        <div className="flex items-center gap-2 rounded border border-border-soft bg-bg-alt px-3 py-2 text-[11px] text-fg-dim">
+          <RefreshCw size={12} className="animate-spin text-accent" />
+          {step}
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="flex items-start gap-2 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+          <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 break-words">{error}</span>
+        </div>
+      ) : null}
+
+      {result?.ok ? (
+        <div className="grid gap-2 rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2.5 text-[11px] text-fg-dim">
+          <div className="flex items-center gap-1.5 text-emerald-300">
+            <Check size={13} />
+            配置完成
+            {result.engineAssociation ? `（引擎 ${result.engineAssociation}）` : ''}
+          </div>
+          {result.configuredPlugins.length > 0 ? (
+            <div>
+              已启用插件：
+              <span className="text-fg">{result.configuredPlugins.join('、')}</span>
+            </div>
+          ) : null}
+          {result.changedFiles.length > 0 ? (
+            <div className="grid gap-1">
+              <span>已写入/更新：</span>
+              <ul className="grid gap-0.5">
+                {result.changedFiles.map((file) => (
+                  <li key={file} className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onOpenFile(file)}
+                      title="在文件管理器中显示"
+                      className="truncate text-left font-mono text-accent hover:underline"
+                    >
+                      {file}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {restartNeeded ? (
+            <div className="mt-1 flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-amber-300">
+              <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+              <span>
+                插件或 RemoteControl 设置已变更，请重启 Unreal Editor 使其生效。MCP
+                服务支持懒连接，可先于编辑器启动，无需手动重启 CLI。
+              </span>
+            </div>
+          ) : null}
+          {result.notes.length > 0 ? (
+            <div className="text-fg-faint">
+              说明：{result.notes.join('；')}
+            </div>
+          ) : null}
+          {result.warnings.length > 0 ? (
+            <div className="text-amber-300/90">
+              提示：{result.warnings.join('；')}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export default function ProjectSettingsModal({
   workspace,
   onClose,
   onWorkspaceUpdated,
 }: ProjectSettingsModalProps) {
   const [tab, setTab] = useState<ProjectSettingsTab>('overview');
+  const locale = useStore((s) => s.locale);
+  const gameExpertSettings = useStore((s) => s.gameExpertSettings);
+  const setGameExpertSettings = useStore((s) => s.setGameExpertSettings);
   const [record, setRecord] = useState<WorkspaceRecord | null>(null);
   const [scan, setScan] = useState<ProjectEnvironmentScan | null>(null);
   const [settings, setSettings] = useState<ProjectSettings>(() =>
@@ -195,6 +506,10 @@ export default function ProjectSettingsModal({
   const [probing, setProbing] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [ueSetupBusy, setUeSetupBusy] = useState(false);
+  const [ueSetupStep, setUeSetupStep] = useState<string | null>(null);
+  const [ueSetupResult, setUeSetupResult] = useState<UeMcpSetupResult | null>(null);
+  const [ueSetupError, setUeSetupError] = useState<string | null>(null);
 
   const workspacePath = record?.path || workspace.path || '';
   const health = useMemo(
@@ -207,6 +522,12 @@ export default function ProjectSettingsModal({
         scan,
       ),
     [record?.metadata, scan, workspace],
+  );
+  const showGameFeatures = shouldShowGameFeatures(settings, scan);
+  const visibleTabs = useMemo(
+    () =>
+      tabs.filter((item) => !GAME_FEATURE_TABS.has(item.id) || showGameFeatures),
+    [showGameFeatures],
   );
 
   const updateMcp = useCallback(
@@ -314,6 +635,12 @@ export default function ProjectSettingsModal({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    if (GAME_FEATURE_TABS.has(tab) && !showGameFeatures) {
+      setTab('overview');
+    }
+  }, [showGameFeatures, tab]);
 
   const persistSettings = useCallback(
     async (next: ProjectSettings) => {
@@ -428,11 +755,116 @@ export default function ProjectSettingsModal({
     setProbing(false);
   }, [persistSettings, settings, workspacePath]);
 
+  const isUnrealProject =
+    (scan?.engine.engine ?? settings.engine) === 'unreal';
+
+  // True one-click flow: download+verify binary → run --setup-project →
+  // register/update the project MCP server → probe → surface a restart hint.
+  const setupUnrealMcp = useCallback(async () => {
+    if (!tauriAvailable()) {
+      setUeSetupError('一键安装需要在桌面应用中运行。');
+      return;
+    }
+    if (!workspacePath.trim()) {
+      setUeSetupError('未指定工作区路径。');
+      return;
+    }
+    setUeSetupBusy(true);
+    setUeSetupError(null);
+    setUeSetupResult(null);
+    setStatus(null);
+    try {
+      setUeSetupStep('正在下载并校验 UE MCP 二进制...');
+      const binary = await ueMcpEnsureBinary();
+
+      setUeSetupStep('正在配置工程（启用插件 / 写入 RemoteControl 与 .mcp.json）...');
+      const result = await ueMcpSetupProject({
+        rootPath: workspacePath,
+        serverCommand: binary.path,
+      });
+      setUeSetupResult(result);
+      if (!result.ok) {
+        setUeSetupError(result.error || 'UE MCP 配置失败。');
+        return;
+      }
+
+      // Register / update the project MCP server so it persists + is probeable.
+      const serverConfig: ProjectMcpServerConfig = {
+        id: UE_MCP_SERVER_ID,
+        label: 'Unreal MCP (全版本)',
+        description: `版本无关的 Unreal RemoteControl MCP（${binary.version}），支持 UE 4.25–5.8。`,
+        source: 'suggested',
+        enabled: true,
+        transport: 'stdio',
+        command: result.serverCommand || binary.path,
+        args: [],
+        env: {},
+        requiresUserApproval: true,
+      };
+      const merged: ProjectSettings = {
+        ...settings,
+        engine: 'unreal',
+        mcp: {
+          ...settings.mcp,
+          enabled: true,
+          servers: settings.mcp.servers.some((s) => s.id === UE_MCP_SERVER_ID)
+            ? settings.mcp.servers.map((s) =>
+                s.id === UE_MCP_SERVER_ID ? { ...s, ...serverConfig } : s,
+              )
+            : [...settings.mcp.servers, serverConfig],
+        },
+      };
+      setSettings(merged);
+      await persistSettings(merged);
+
+      // Best-effort connectivity probe (the server lazy-connects, so a failure
+      // here usually just means the editor isn't running yet).
+      setUeSetupStep('正在探测 MCP 连接...');
+      const probe = await probeProjectMcpServer(workspacePath, {
+        id: serverConfig.id,
+        transport: serverConfig.transport,
+        command: serverConfig.command,
+        args: serverConfig.args,
+        env: serverConfig.env,
+      }).catch(
+        (err): ProjectMcpProbeResult => ({
+          serverId: serverConfig.id,
+          ok: false,
+          status: 'probe-error',
+          message: describeError(err),
+          toolsCount: null,
+          checkedAtMs: Date.now(),
+        }),
+      );
+      const probed: ProjectSettings = {
+        ...merged,
+        mcp: {
+          ...merged.mcp,
+          servers: merged.mcp.servers.map((s) =>
+            s.id === serverConfig.id ? { ...s, lastProbe: probe } : s,
+          ),
+        },
+      };
+      setSettings(probed);
+      await persistSettings(probed);
+      setStatus(
+        probe.ok
+          ? 'Unreal MCP 已配置并连接成功。'
+          : 'Unreal MCP 已配置；等待 Unreal Editor 启动后即可连接。',
+      );
+    } catch (err) {
+      setUeSetupError(describeError(err));
+    } finally {
+      setUeSetupBusy(false);
+      setUeSetupStep(null);
+    }
+  }, [persistSettings, settings, workspacePath]);
+
   const content = (() => {
     if (tab === 'overview') {
       const detectedEngine = scan?.engine.engine ?? 'unknown';
       return (
-        <div className="grid gap-4">
+        <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
           <section className="rounded-md border border-border bg-panel-2 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -511,7 +943,7 @@ export default function ProjectSettingsModal({
       );
     }
 
-    if (tab === 'game') {
+    if (tab === 'mesh') {
       const detectedEngine = scan?.engine.engine ?? 'unknown';
       const autoMode = settings.automation.autoDetect;
       return (
@@ -519,11 +951,10 @@ export default function ProjectSettingsModal({
           <section className="rounded-md border border-border bg-panel-2 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-fg">游戏相关能力</div>
+                <div className="text-sm font-semibold text-fg">Mesh 渠道</div>
                 <div className="mt-1 text-xs leading-relaxed text-fg-faint">
-                  当前检测：{scan?.engine.label ?? '未识别'}。自动检测开启时，
-                  UE / Unity / Godot 项目会默认开启 Mesh、骨骼绑定和游戏专家；
-                  非游戏项目默认关闭。
+                  当前检测：{scan?.engine.label ?? '未识别'}。自动检测开启时，UE /
+                  Unity / Godot 项目会默认开启 Mesh 渠道；非游戏项目默认关闭。
                 </div>
               </div>
               <span
@@ -540,19 +971,99 @@ export default function ProjectSettingsModal({
           </section>
 
           <ToggleRow
-            label="Mesh 渠道"
+            label="启用 Mesh 渠道"
             hint="控制当前项目是否启用 3D 模型生成入口。"
             checked={settings.gameFeatures.meshGeneration}
             onChange={(checked) => updateGameFeatures({ meshGeneration: checked })}
           />
+
+          <div className="rounded-md border border-border bg-panel-2 p-4 text-xs text-fg-faint">
+            <span className="inline-flex items-center gap-1 rounded border border-border-soft bg-bg-alt px-2 py-1">
+              <Box size={12} />
+              Mesh：{settings.gameFeatures.meshGeneration ? '开启' : '关闭'}
+            </span>
+          </div>
+
+          <ThreeDGenerationSettingsPanel locale={locale} embedded />
+        </div>
+      );
+    }
+
+    if (tab === 'rigging') {
+      const detectedEngine = scan?.engine.engine ?? 'unknown';
+      const autoMode = settings.automation.autoDetect;
+      return (
+        <div className="grid gap-4">
+          <section className="rounded-md border border-border bg-panel-2 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-fg">绑定渠道</div>
+                <div className="mt-1 text-xs leading-relaxed text-fg-faint">
+                  当前检测：{scan?.engine.label ?? '未识别'}。自动检测开启时，UE /
+                  Unity / Godot 项目会默认开启自动骨骼绑定；非游戏项目默认关闭。
+                </div>
+              </div>
+              <span
+                className={cn(
+                  'rounded border px-2 py-0.5 text-[11px]',
+                  detectedEngine === 'unknown'
+                    ? 'border-border-soft bg-bg-alt text-fg-faint'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+                )}
+              >
+                {autoMode ? '自动检测' : '手动设置'}
+              </span>
+            </div>
+          </section>
+
           <ToggleRow
-            label="骨骼绑定"
+            label="启用绑定渠道"
             hint="控制当前项目是否启用自动绑骨流程。"
             checked={settings.gameFeatures.rigging}
             onChange={(checked) => updateGameFeatures({ rigging: checked })}
           />
+
+          <div className="rounded-md border border-border bg-panel-2 p-4 text-xs text-fg-faint">
+            <span className="inline-flex items-center gap-1 rounded border border-border-soft bg-bg-alt px-2 py-1">
+              <Bone size={12} />
+              绑定：{settings.gameFeatures.rigging ? '开启' : '关闭'}
+            </span>
+          </div>
+
+          <RiggingSettingsPanel locale={locale} embedded />
+        </div>
+      );
+    }
+
+    if (tab === 'gameExperts') {
+      const detectedEngine = scan?.engine.engine ?? 'unknown';
+      const autoMode = settings.automation.autoDetect;
+      return (
+        <div className="grid gap-4">
+          <section className="rounded-md border border-border bg-panel-2 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-fg">游戏专家</div>
+                <div className="mt-1 text-xs leading-relaxed text-fg-faint">
+                  当前检测：{scan?.engine.label ?? '未识别'}。自动检测开启时，UE /
+                  Unity / Godot 项目会默认开启游戏专家，并自动选择对应引擎。
+                </div>
+              </div>
+              <span
+                className={cn(
+                  'rounded border px-2 py-0.5 text-[11px]',
+                  detectedEngine === 'unknown'
+                    ? 'border-border-soft bg-bg-alt text-fg-faint'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+                )}
+              >
+                {autoMode ? '自动检测' : '手动设置'}
+              </span>
+            </div>
+          </section>
+
           <ToggleRow
-            label="游戏专家"
+            label="启用游戏专家"
             hint="控制当前项目是否启用游戏专家，并在游戏项目中自动选择对应引擎。"
             checked={settings.gameFeatures.gameExperts}
             onChange={(checked) => updateGameFeatures({ gameExperts: checked })}
@@ -582,26 +1093,39 @@ export default function ProjectSettingsModal({
             </SettingsRow>
             <div className="flex flex-wrap gap-2 text-[11px] text-fg-faint">
               <span className="inline-flex items-center gap-1 rounded border border-border-soft bg-bg-alt px-2 py-1">
-                <Box size={12} />
-                Mesh：{settings.gameFeatures.meshGeneration ? '开启' : '关闭'}
-              </span>
-              <span className="inline-flex items-center gap-1 rounded border border-border-soft bg-bg-alt px-2 py-1">
-                <Bone size={12} />
-                骨骼：{settings.gameFeatures.rigging ? '开启' : '关闭'}
-              </span>
-              <span className="inline-flex items-center gap-1 rounded border border-border-soft bg-bg-alt px-2 py-1">
                 <Gamepad2 size={12} />
                 专家：{settings.gameFeatures.gameExperts ? '开启' : '关闭'}
               </span>
             </div>
           </div>
+
+          <GameExpertSettingsPanel
+            locale={locale}
+            settings={gameExpertSettings}
+            setSettings={setGameExpertSettings}
+            embedded
+          />
         </div>
       );
+    }
+
+    if (tab === 'commands') {
+      return <ProjectCommandsSettings />;
     }
 
     if (tab === 'mcp') {
       return (
         <div className="grid gap-4">
+          {isUnrealProject ? (
+            <UnrealMcpQuickSetup
+              busy={ueSetupBusy}
+              step={ueSetupStep}
+              result={ueSetupResult}
+              error={ueSetupError}
+              onRun={setupUnrealMcp}
+              onOpenFile={(path) => void openLocalPath(path, { reveal: true })}
+            />
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <ToggleRow
               label="启用项目 MCP"
@@ -821,14 +1345,14 @@ export default function ProjectSettingsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 sm:p-6"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="project-settings-title"
-        className="flex h-[min(840px,calc(100vh-2rem))] w-[min(1080px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-2xl"
+        className="flex h-[calc(100vh-2.5rem)] w-[calc(100vw-2.5rem)] max-w-[1600px] max-h-[1000px] flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <header className="shrink-0 border-b border-border-soft bg-bg-alt px-5 py-4">
@@ -867,9 +1391,9 @@ export default function ProjectSettingsModal({
         </header>
 
         <div className="min-h-0 flex flex-1 flex-col bg-border-soft sm:flex-row">
-          <nav className="w-full shrink-0 overflow-y-auto border-b border-border-soft bg-bg-alt p-3 sm:w-52 sm:border-b-0 sm:border-r">
+          <nav className="w-full shrink-0 overflow-y-auto border-b border-border-soft bg-bg-alt p-3 sm:w-56 sm:border-b-0 sm:border-r">
             <div role="tablist" aria-orientation="vertical" className="grid gap-1">
-              {tabs.map((item) => {
+              {visibleTabs.map((item) => {
                 const active = item.id === tab;
                 const Icon = item.Icon;
                 return (
@@ -894,13 +1418,13 @@ export default function ProjectSettingsModal({
             </div>
           </nav>
 
-          <main className="min-h-0 flex-1 overflow-y-auto bg-panel p-4 sm:p-5">
+          <main className="min-h-0 flex-1 overflow-y-auto bg-panel px-6 py-5 md:px-8 md:py-7">
             {loading ? (
               <div className="flex h-full items-center justify-center text-sm text-fg-faint">
                 检测中...
               </div>
             ) : (
-              content
+              <div className="w-full max-w-[1180px]">{content}</div>
             )}
           </main>
         </div>

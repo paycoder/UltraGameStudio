@@ -90,7 +90,7 @@ describe('game producer orchestration', () => {
     expect(prompt).toContain('游戏制作人总控');
     expect(prompt).toContain('不亲自做创意拍板');
     expect(prompt).toContain('/image');
-    expect(prompt).toContain('/3d');
+    expect(prompt).toContain('/mesh-mode-start');
     expect(prompt).toContain(String(PRODUCER_MAX_REWORK));
   });
 

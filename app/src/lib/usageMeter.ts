@@ -318,6 +318,61 @@ export function usageReportFromCodex(value: unknown): ModelUsageReport | null {
   return Object.values(report).some((item) => item !== undefined) ? report : null;
 }
 
+/**
+ * Normalize the raw usage payload streamed back by a CLI adapter (claude / codex
+ * / gemini) into a {@link ModelUsageReport}. The shape differs per provider:
+ *
+ * - Codex / OpenAI-style: `input_tokens` already *includes* the cached portion
+ *   (`cached_input_tokens` is a subset), so the cached/total ratio is correct as-is.
+ * - Anthropic-style: `input_tokens` counts only the *uncached* prefix, with cache
+ *   hits/writes reported separately (`cache_read_input_tokens` /
+ *   `cache_creation_input_tokens`). We fold those back into a single total so the
+ *   meter's cached÷total math stays correct.
+ *
+ * Returns null when the payload carries no recognizable token counts.
+ */
+export function usageReportFromCliUsage(value: unknown): ModelUsageReport | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const anthropicStyle =
+    raw.cache_read_input_tokens !== undefined ||
+    raw.cache_creation_input_tokens !== undefined ||
+    raw.cache_read_tokens !== undefined ||
+    raw.cache_creation_tokens !== undefined;
+  const cacheRead =
+    numberFrom(raw.cache_read_input_tokens) ??
+    numberFrom(raw.cached_input_tokens) ??
+    numberFrom(raw.cache_read_tokens);
+  const cacheCreation =
+    numberFrom(raw.cache_creation_input_tokens) ??
+    numberFrom(raw.cache_creation_tokens);
+  const rawInput =
+    numberFrom(raw.input_tokens) ??
+    numberFrom(raw.inputTokens) ??
+    numberFrom(raw.prompt_tokens);
+  const outputTokens =
+    numberFrom(raw.output_tokens) ??
+    numberFrom(raw.outputTokens) ??
+    numberFrom(raw.completion_tokens);
+  // Anthropic keeps the cached prefix out of `input_tokens`; sum it back in so
+  // the gauge reflects cache-of-total. Codex/OpenAI already report the full
+  // input, so leave it untouched.
+  const inputTokens = anthropicStyle
+    ? (rawInput ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0)
+    : rawInput;
+  const report: ModelUsageReport = {
+    inputTokens,
+    outputTokens,
+    totalTokens:
+      inputTokens !== undefined || outputTokens !== undefined
+        ? (inputTokens ?? 0) + (outputTokens ?? 0)
+        : undefined,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheCreation,
+  };
+  return Object.values(report).some((item) => item !== undefined) ? report : null;
+}
+
 export function usageReportFromAnthropic(value: unknown): ModelUsageReport | null {
   if (typeof value !== 'object' || value === null) return null;
   const raw = value as Record<string, unknown>;

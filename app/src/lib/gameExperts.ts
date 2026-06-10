@@ -2263,7 +2263,7 @@ function modeInstruction(mode: GameExpertMode): string {
  * These map to user-triggerable slash commands wired in AIDock:
  *   - image: `/image`, `/生图`, or `/image-mode-start` (image mode)
  *   - music: `/music`, `/音乐`, or `/music-mode-start` (music mode)
- *   - threeD: `/3d`, `/三维`, or `/mesh-mode-start` (mesh mode)
+ *   - threeD: `/三维` or `/mesh-mode-start` (mesh mode)
  *
  * The model cannot run these itself; it should proactively recommend the right
  * command when an expert's advice produces an image/audio/3D asset need.
@@ -2337,7 +2337,7 @@ function buildChannelGuidance(
   }
   if (channels.threeD && hasAny(THREE_D_RELEVANT_EXPERT_IDS)) {
     lines.push(
-      '· 建模渠道可用：需要 3D 道具、角色、场景网格、blockout 等资产时，主动建议用户用 /3d（或 /三维、/mesh-mode-start 建模模式）调用已配置的 3D 渠道，并给出可直接使用的建模提示词。',
+      '· 建模渠道可用：需要 3D 道具、角色、场景网格、blockout 等资产时，主动建议用户用 /mesh-mode-start（建模模式）调用已配置的 3D 渠道，并给出可直接使用的建模提示词。',
     );
   }
   if (lines.length === 0) return [];

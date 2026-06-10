@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.3.2"
+version = "0.3.3"
 description = "FreeUltraCode - Visual AI Workflow Editor"
 authors = ["FreeUltraCode"]
 license = ""
@@ -37,6 +37,8 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 ureq = { version = "2", features = ["json", "tls"] }
 tiny_http = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 toml = "0.8"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

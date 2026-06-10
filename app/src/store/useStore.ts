@@ -61,7 +61,13 @@ import {
   recordModelCall,
   timeoutPolicyForSelection,
 } from '@/lib/modelSpeed';
-import { recordEstimatedModelUsageForSelection } from '@/lib/usageMeter';
+import {
+  recordEstimatedModelUsageForSelection,
+  recordModelUsageForRoute,
+  mergeUsageReports,
+  usageReportFromCliUsage,
+  type ModelUsageReport,
+} from '@/lib/usageMeter';
 import {
   appendStartUserInputs,
   readStartUserInputs,
@@ -2877,9 +2883,14 @@ async function activateHistorySession(
       }
     : aiEditSnapshot
       ? emptyRunProgress()
-    : recordWorkflow
-      ? runProgressFromSnapshot(workflow, workflow.meta.run ?? null)
-      : emptyRunProgress();
+      : recordWorkflow
+        ? runProgressFromSnapshot(workflow, workflow.meta.run ?? null)
+        : emptyRunProgress();
+  const viewMessages = liveRun
+    ? liveRun.messages
+    : aiEditSnapshot
+      ? mergeMessagesById(record.messages, aiEditSnapshot.messages)
+      : record.messages;
   const canvasViewport = canvasViewportForSession(
     targetWorkspaceId,
     session.id,
@@ -2943,11 +2954,7 @@ async function activateHistorySession(
           },
         };
       })(),
-      messages: liveRun
-        ? liveRun.messages
-        : aiEditSnapshot
-          ? aiEditSnapshot.messages
-          : record.messages,
+      messages: viewMessages,
       ...runProgress,
       canvasViewport: recordWorkflow ? canvasViewport : null,
       selectedNodeId: null,
@@ -4514,11 +4521,20 @@ export const useStore = create<StoreState>((set, get) => ({
       state.workflow,
       state.composer.model,
     );
-    if (
-      state.workflow.meta?.simple === true &&
-      hasActiveChatForDifferentSelection(aiEditingSession, gatewaySelection)
-    ) {
+    const activeChatAppend =
+      state.workflow.meta?.simple === true
+        ? appendPromptToActiveSimpleChat(
+            aiEditingSession,
+            gatewaySelection,
+            trimmed,
+          )
+        : 'none';
+    if (activeChatAppend === 'selection-mismatch') {
       set({ blockedSendTip: 'model-switched-while-chatting' });
+      return;
+    }
+    if (activeChatAppend === 'appended') {
+      if (state.blockedSendTip) set({ blockedSendTip: null });
       return;
     }
     if (state.blockedSendTip) set({ blockedSendTip: null });
@@ -4860,12 +4876,19 @@ ${previousReply.slice(0, 4000)}
       let firstProgressAt: number | undefined;
       const runId = opts.runId ?? makeCliRunId();
       ch.cliRunIds.add(runId);
+      // Capture the backend's real token usage (claude/codex emit cache hits
+      // via the `ai-cli-usage` event). When present we record it as authoritative
+      // so the status bar shows the true cache percentage instead of `--`.
+      let realUsage: ModelUsageReport | null = null;
       try {
         const text = await aiEditViaCli(prompt, cli.adapter, {
           ...opts,
           timeoutSeconds: policy.timeoutSeconds,
           idleTimeoutSeconds: policy.idleTimeoutSeconds,
           runId,
+          onUsage: (raw) => {
+            realUsage = mergeUsageReports(realUsage, usageReportFromCliUsage(raw));
+          },
           onProgress: opts.onProgress
             ? (chunk) => {
                 firstProgressAt ??= Date.now();
@@ -4878,21 +4901,33 @@ ${previousReply.slice(0, 4000)}
           firstProgressMs: firstProgressAt ? firstProgressAt - startedAt : undefined,
           ok: true,
         });
-        recordEstimatedModelUsageForSelection(
-          cli.selection,
-          prompt,
-          text,
-          {
-            baseUrl: cli.baseUrl,
-            model: cli.model,
-            providerName: cli.providerName,
-            channelName: cli.channelName,
-            label: cli.label,
-          },
-          {
-            context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
-          },
-        );
+        const usageRoute = {
+          baseUrl: cli.baseUrl,
+          model: cli.model,
+          providerName: cli.providerName,
+          channelName: cli.channelName,
+          label: cli.label,
+        };
+        if (realUsage) {
+          recordModelUsageForRoute(
+            { ...usageRoute, selection: cli.selection },
+            realUsage,
+            {
+              estimated: false,
+              context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
+            },
+          );
+        } else {
+          recordEstimatedModelUsageForSelection(
+            cli.selection,
+            prompt,
+            text,
+            usageRoute,
+            {
+              context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
+            },
+          );
+        }
         return text;
       } catch (err) {
         const failure = describeRunFailure(err);
@@ -6644,18 +6679,80 @@ function getAiEditChatChannels(
   );
 }
 
-function hasActiveChatForDifferentSelection(
+// Currently unused (no caller wired up yet); kept commented to preserve intent.
+// function hasActiveChatForDifferentSelection(
+//   sessionKey: WorkflowSessionKey,
+//   selection: GatewaySelection,
+// ): boolean {
+//   const currentKey = selectionKey(normalizeGatewaySelection(selection));
+//   return getAiEditChatChannels(
+//     sessionKey.workspaceId,
+//     sessionKey.sessionId,
+//   ).some((ch) => {
+//     if (!ch.gatewaySelection) return false;
+//     return selectionKey(normalizeGatewaySelection(ch.gatewaySelection)) !== currentKey;
+//   });
+// }
+
+type ActiveChatAppendResult = 'none' | 'appended' | 'selection-mismatch';
+
+function appendPromptToActiveSimpleChat(
   sessionKey: WorkflowSessionKey,
   selection: GatewaySelection,
-): boolean {
-  const currentKey = selectionKey(normalizeGatewaySelection(selection));
-  return getAiEditChatChannels(
+  text: string,
+): ActiveChatAppendResult {
+  const channels = getAiEditChatChannels(
     sessionKey.workspaceId,
     sessionKey.sessionId,
-  ).some((ch) => {
+  );
+  if (channels.length === 0) return 'none';
+
+  const currentKey = selectionKey(normalizeGatewaySelection(selection));
+  const compatible = channels.filter((ch) => {
     if (!ch.gatewaySelection) return false;
-    return selectionKey(normalizeGatewaySelection(ch.gatewaySelection)) !== currentKey;
+    return selectionKey(normalizeGatewaySelection(ch.gatewaySelection)) === currentKey;
   });
+  if (compatible.length !== channels.length || compatible.length === 0) {
+    return 'selection-mismatch';
+  }
+
+  const ch = compatible[compatible.length - 1];
+  const userMsg: Message = {
+    id: shortId('m'),
+    role: 'user',
+    text,
+    createdAt: Date.now(),
+  };
+
+  const baseMessages = mergeAiEditChatMessages(ch);
+  ch.ownedMessageIds?.add(userMsg.id);
+  ch.messages = [...baseMessages, userMsg];
+  ch.workflow = simpleWorkflowFromMessages(aiEditBaseWorkflow(ch), ch.messages);
+  rememberAiEditSnapshot(ch);
+
+  if (aiEditViewActive(ch)) {
+    useStore.setState({
+      messages: ch.messages,
+      workflow: ch.workflow,
+    });
+  }
+  updateAiEditSessionSummary(ch);
+  syncSessionRunStatus(
+    { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
+    'running',
+  );
+
+  if (ch.workspaceId && ch.sessionId) {
+    void historyStore
+      .updateSession(ch.workspaceId, ch.sessionId, {
+        messages: ch.messages,
+        ...(ch.workflowSession ? { workflow: ch.workflow } : {}),
+        meta: { runStatus: 'running' },
+      })
+      .catch(() => {});
+  }
+
+  return 'appended';
 }
 
 function getAiEditSnapshotsForSession(
@@ -8511,6 +8608,9 @@ async function invokeAgentCli(
 ): Promise<string> {
   const runId = makeCliRunId();
   ch.cliRunIds.add(runId);
+  // Capture the backend's real token usage (cache hits included) so node runs
+  // also feed true cache percentages into the meter instead of estimates.
+  let realUsage: ModelUsageReport | null = null;
   try {
     const text = await aiEditViaCli(prompt, adapter, {
       ...opts,
@@ -8521,23 +8621,38 @@ async function invokeAgentCli(
       timeoutSeconds: opts.timeoutSeconds,
       idleTimeoutSeconds: opts.idleTimeoutSeconds,
       runId,
+      onUsage: (raw) => {
+        realUsage = mergeUsageReports(realUsage, usageReportFromCliUsage(raw));
+      },
     });
     if (opts.selection) {
-      recordEstimatedModelUsageForSelection(
-        opts.selection,
-        prompt,
-        text,
-        {
-          baseUrl:
-            opts.env?.ANTHROPIC_BASE_URL ||
-            opts.env?.OPENAI_BASE_URL ||
-            opts.env?.GOOGLE_GEMINI_BASE_URL,
-          model: opts.model,
-        },
-        {
-          context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
-        },
-      );
+      const usageRoute = {
+        baseUrl:
+          opts.env?.ANTHROPIC_BASE_URL ||
+          opts.env?.OPENAI_BASE_URL ||
+          opts.env?.GOOGLE_GEMINI_BASE_URL,
+        model: opts.model,
+      };
+      if (realUsage) {
+        recordModelUsageForRoute(
+          { ...usageRoute, selection: opts.selection },
+          realUsage,
+          {
+            estimated: false,
+            context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
+          },
+        );
+      } else {
+        recordEstimatedModelUsageForSelection(
+          opts.selection,
+          prompt,
+          text,
+          usageRoute,
+          {
+            context: { workspaceId: ch.workspaceId, sessionId: ch.sessionId },
+          },
+        );
+      }
     }
     return text;
   } finally {

@@ -2,8 +2,16 @@ import type { WorkspaceTreeEntry } from '@/lib/tauri';
 
 export const PROJECT_FILE_DRAG_MIME =
   'application/x-freeultracode-project-file-paths';
+export const PROJECT_FILE_DRAG_MOVE_EVENT =
+  'freeultracode:project-file-drag-move';
 export const PROJECT_FILE_DRAG_END_EVENT =
   'freeultracode:project-file-drag-end';
+
+export interface ProjectFileDragMoveDetail {
+  paths: string[];
+  clientX: number;
+  clientY: number;
+}
 
 export interface ProjectFileDragEndDetail {
   paths: string[];
@@ -26,6 +34,7 @@ const ACTIVE_PROJECT_FILE_DRAG_TTL_MS = 60_000;
 
 let activeProjectFileDragPayload: ProjectFileDragPayload | null = null;
 let lastProjectFileDragPoint: { clientX: number; clientY: number } | null = null;
+let activeProjectFileDragAccepted = false;
 
 function dragPointFromEvent(
   event: { clientX?: number; clientY?: number } | undefined,
@@ -83,6 +92,7 @@ export function setProjectFileDragData(
   const payload = projectFileDragPayloadFromEntry(entry);
   activeProjectFileDragPayload = payload;
   lastProjectFileDragPoint = null;
+  activeProjectFileDragAccepted = false;
 
   try {
     dataTransfer.effectAllowed = 'copy';
@@ -104,6 +114,7 @@ export function setProjectFileDragData(
 export function clearProjectFileDragData(): void {
   activeProjectFileDragPayload = null;
   lastProjectFileDragPoint = null;
+  activeProjectFileDragAccepted = false;
 }
 
 export function updateProjectFileDragPoint(
@@ -111,7 +122,42 @@ export function updateProjectFileDragPoint(
 ): void {
   if (!activeProjectFileDragPayload) return;
   const point = dragPointFromEvent(event);
-  if (point) lastProjectFileDragPoint = point;
+  if (!point) return;
+
+  lastProjectFileDragPoint = point;
+  const paths = activeProjectFilePaths();
+  if (
+    paths.length === 0 ||
+    typeof window === 'undefined' ||
+    typeof CustomEvent === 'undefined'
+  ) {
+    return;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent<ProjectFileDragMoveDetail>(PROJECT_FILE_DRAG_MOVE_EVENT, {
+      detail: {
+        paths,
+        clientX: point.clientX,
+        clientY: point.clientY,
+      },
+    }),
+  );
+}
+
+export function setProjectFileDragAccepted(accepted: boolean): void {
+  activeProjectFileDragAccepted = accepted;
+}
+
+export function applyProjectFileDragDropEffect(
+  dataTransfer: DataTransfer,
+): void {
+  if (activeProjectFilePaths().length === 0) return;
+  try {
+    dataTransfer.dropEffect = activeProjectFileDragAccepted ? 'copy' : 'none';
+  } catch {
+    // Some embedded WebViews expose a restricted DataTransfer during drag.
+  }
 }
 
 export function finishProjectFileDrag(

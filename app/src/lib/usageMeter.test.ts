@@ -3,6 +3,7 @@ import {
   readUsageMeterSnapshot,
   recordModelUsageForRoute,
   recordEstimatedModelUsageForSelection,
+  usageReportFromCliUsage,
   usageReportFromCodex,
   usageReportFromOpenAI,
 } from './usageMeter';
@@ -98,5 +99,51 @@ describe('usage meter', () => {
     expect(snapshot.lastCall.inputTokens).toBe(22451);
     expect(snapshot.lastCall.cachedInputTokens).toBe(11648);
     expect(snapshot.lastCall.cachePercent).toBeCloseTo(51.88, 2);
+  });
+
+  it('folds Anthropic CLI cache hits back into the input total', () => {
+    // claude stream-json reports input_tokens as the *uncached* prefix only;
+    // the cached prefix lives in cache_read/cache_creation.
+    const report = usageReportFromCliUsage({
+      input_tokens: 120,
+      output_tokens: 40,
+      cache_read_input_tokens: 800,
+      cache_creation_input_tokens: 80,
+    });
+
+    expect(report).not.toBeNull();
+    // 120 + 800 + 80 folded into a single input total.
+    expect(report!.inputTokens).toBe(1000);
+
+    recordModelUsageForRoute(
+      { providerName: 'Anthropic', model: 'claude-sonnet-4' },
+      report!,
+      { estimated: false, context: { workspaceId: 'w1', sessionId: 's1' } },
+    );
+
+    const snapshot = readUsageMeterSnapshot({ workspaceId: 'w1', sessionId: 's1' });
+    expect(snapshot.lastCall.estimated).toBe(false);
+    expect(snapshot.lastCall.inputTokens).toBe(1000);
+    expect(snapshot.lastCall.cachedInputTokens).toBe(880);
+    expect(snapshot.lastCall.cachePercent).toBeCloseTo(88, 2);
+  });
+
+  it('treats Codex CLI input_tokens as already inclusive of the cached portion', () => {
+    const report = usageReportFromCliUsage({
+      input_tokens: 22451,
+      cached_input_tokens: 11648,
+      output_tokens: 28,
+    });
+
+    expect(report).not.toBeNull();
+    // No cache_read/creation keys -> Codex style, input stays as reported.
+    expect(report!.inputTokens).toBe(22451);
+    expect(report!.cacheReadInputTokens).toBe(11648);
+  });
+
+  it('returns null for usage payloads without recognizable token counts', () => {
+    expect(usageReportFromCliUsage(null)).toBeNull();
+    expect(usageReportFromCliUsage({})).toBeNull();
+    expect(usageReportFromCliUsage({ some: 'thing' })).toBeNull();
   });
 });

@@ -23,11 +23,13 @@ import {
   List,
   Loader2,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import FilePreviewDrawer from '@/components/ai/FilePreviewDrawer';
 import type { FileRef } from '@/components/ai/lib/filePath';
 import { t } from '@/lib/i18n';
 import {
+  applyProjectFileDragDropEffect,
   finishProjectFileDrag,
   setProjectFileDragData,
   updateProjectFileDragPoint,
@@ -1018,12 +1020,14 @@ export default function ProjectFileTree() {
     (event: ReactDragEvent<HTMLElement>, entry: WorkspaceTreeEntry) => {
       setProjectFileDragData(event.dataTransfer, entry);
       updateProjectFileDragPoint(event);
+      applyProjectFileDragDropEffect(event.dataTransfer);
     },
     [],
   );
 
   const trackEntryDrag = useCallback((event: ReactDragEvent<HTMLElement>) => {
     updateProjectFileDragPoint(event);
+    applyProjectFileDragDropEffect(event.dataTransfer);
   }, []);
 
   const finishEntryDrag = useCallback((event: ReactDragEvent<HTMLElement>) => {
@@ -1688,6 +1692,17 @@ export default function ProjectFileTree() {
                 )}
               </button>
             </div>
+            {panelTab === 'changes' && selectedChangeKey && (
+              <button
+                type="button"
+                onClick={() => setSelectedChangeKey(null)}
+                title="关闭差异详情"
+                aria-label="关闭差异详情"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
+              >
+                <X size={16} strokeWidth={2.2} />
+              </button>
+            )}
             {panelTab === 'files' && (
               <div className="ml-auto flex shrink-0 rounded-md border border-border-soft bg-panel-2 p-0.5">
               <button
