@@ -119,4 +119,40 @@ describe('top workspace switcher selection (selectedWorkspaceId)', () => {
     expect(state.activeWorkspaceId).toBe(wsB.id);
     expect(state.selectedWorkspaceId).toBe(wsB.id);
   });
+
+  it('does not move the pinned workspace when a new session is created', async () => {
+    await historyStore.ready();
+    const wsA = await historyStore.resolveWorkspaceByPath('E:\test_project_ue53');
+    const wsB = await historyStore.resolveWorkspaceByPath('E:\OpenWorkflow');
+
+    // Game (wsA) is pinned at the top, but the active view lives in wsB after
+    // the user opened an OpenWorkflow (wsB) session earlier.
+    useStore.setState({
+      historyReady: true,
+      activeWorkspaceId: wsB.id,
+      selectedWorkspaceId: wsA.id,
+      activeSessionId: null,
+      workspaces: [wsA, wsB],
+      sessions: [],
+      sessionTree: {
+        [wsA.id]: [],
+        [wsB.id]: [],
+      },
+      workflow: defaultBlueprint('Current workflow'),
+      locale: 'zh-CN',
+    });
+
+    useStore.getState().newSession();
+
+    await waitFor(
+      () => useStore.getState().activeSessionId !== null,
+      'new session creation',
+    );
+
+    const state = useStore.getState();
+    // The new session lands in the active workspace...
+    expect(state.activeWorkspaceId).toBe(wsB.id);
+    // ...but the top switcher's pinned workspace stays on Game.
+    expect(state.selectedWorkspaceId).toBe(wsA.id);
+  });
 });

@@ -4,8 +4,13 @@
  * self-contained ESM file at cli/dist/fuc.mjs.
  *
  *   - platform=node, format=esm, target=node20
- *   - packages=external  (commander/chalk/@babel/* resolved from node_modules
- *     at runtime; the bin is run from inside the repo so they are present)
+ *   - third-party deps (commander/chalk/@babel/*) are BUNDLED in. The shipped
+ *     app carries ONLY cli/dist/fuc.mjs as a Tauri resource — there is no
+ *     node_modules next to it at the install location (e.g.
+ *     %LOCALAPPDATA%\FreeUltraCode\cli), so leaving them `external` caused
+ *     `ERR_MODULE_NOT_FOUND: Cannot find package 'commander'` at runtime for
+ *     installed users. Bundling makes the dist self-contained. Node builtins
+ *     (node:*) are kept external automatically for platform=node.
  *   - alias `@` -> src   (so `@/lib/id` etc. resolve)
  *   - shebang banner so the bin is directly executable
  *
@@ -34,11 +39,21 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  packages: 'external',
+  // Bundle third-party deps into the output so the shipped fuc.mjs is
+  // self-contained (no node_modules at the install location). Node builtins
+  // stay external automatically because platform is 'node'.
+  packages: 'bundle',
   sourcemap: false,
   // The entry (cli/bin/fuc.ts) already carries `#!/usr/bin/env node`, which
-  // esbuild preserves as the bundle's first line — so no extra banner here
-  // (a banner would produce a duplicate shebang and break ESM parsing).
+  // esbuild hoists to the first line of the output. We add a createRequire
+  // shim AFTER it: bundled CJS deps (commander/chalk/@babel) call
+  // `require('events')` etc. internally, and esbuild's ESM `__require` shim
+  // throws ("Dynamic require of ... is not supported") for those. Defining a
+  // real `require` via node:module makes those builtin requires work in the
+  // ESM output.
+  banner: {
+    js: "import { createRequire as __fucCreateRequire } from 'node:module'; const require = __fucCreateRequire(import.meta.url);",
+  },
   alias: { '@': join(root, 'src') },
   define: {
     __FUC_CLI_VERSION__: JSON.stringify(pkg.version),

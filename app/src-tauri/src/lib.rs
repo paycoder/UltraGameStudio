@@ -2605,6 +2605,7 @@ async fn open_workspace_directory(path: String) -> Result<(), String> {
 
 const PREVIEW_TEXT_LIMIT: u64 = 1_500_000;
 const PREVIEW_IMAGE_LIMIT: u64 = 12 * 1024 * 1024;
+const PREVIEW_DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
 const PREVIEW_BASENAME_SEARCH_LIMIT: usize = 20_000;
 const CLIPBOARD_IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 const SESSION_CAPTURE_LIMIT: usize = 128 * 1024 * 1024;
@@ -7291,6 +7292,26 @@ fn image_mime_for_path(path: &std::path::Path) -> Option<&'static str> {
     }
 }
 
+fn document_mime_for_path(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => Some("application/pdf"),
+        "docx" => {
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        }
+        "doc" => Some("application/msword"),
+        "rtf" => Some("application/rtf"),
+        "odt" => Some("application/vnd.oasis.opendocument.text"),
+        "pptx" => {
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        }
+        "ppt" => Some("application/vnd.ms-powerpoint"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "xls" => Some("application/vnd.ms-excel"),
+        _ => None,
+    }
+}
+
 fn image_mime_for_content_type(content_type: &str) -> Option<&'static str> {
     let media_type = content_type
         .split(';')
@@ -7627,6 +7648,33 @@ fn preview_local_file_blocking(
             path,
             file_name,
             kind: "image".to_string(),
+            mime: Some(mime.to_string()),
+            size_bytes,
+            truncated: false,
+            text: None,
+            base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        });
+    }
+
+    if let Some(mime) = document_mime_for_path(&resolved) {
+        if size_bytes > PREVIEW_DOCUMENT_LIMIT {
+            return Ok(LocalFilePreview {
+                path,
+                file_name,
+                kind: "binary".to_string(),
+                mime: Some(mime.to_string()),
+                size_bytes,
+                truncated: false,
+                text: None,
+                base64: None,
+            });
+        }
+        let bytes = std::fs::read(&resolved).map_err(|e| format!("读取文档失败：{e}"))?;
+        use base64::Engine;
+        return Ok(LocalFilePreview {
+            path,
+            file_name,
+            kind: "document".to_string(),
             mime: Some(mime.to_string()),
             size_bytes,
             truncated: false,
@@ -11718,6 +11766,23 @@ mod tests {
             ),
             "zip"
         );
+    }
+
+    #[test]
+    fn preview_document_mime_supports_office_formats() {
+        assert_eq!(
+            document_mime_for_path(std::path::Path::new("report.pdf")),
+            Some("application/pdf")
+        );
+        assert_eq!(
+            document_mime_for_path(std::path::Path::new("notes.docx")),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+        assert_eq!(
+            document_mime_for_path(std::path::Path::new("legacy.doc")),
+            Some("application/msword")
+        );
+        assert_eq!(document_mime_for_path(std::path::Path::new("readme.txt")), None);
     }
 
     #[test]

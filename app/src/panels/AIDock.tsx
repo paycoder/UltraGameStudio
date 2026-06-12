@@ -103,6 +103,7 @@ import {
   type ThreeDProviderId,
 } from '@/lib/threeDGeneration';
 import type { SelectOption } from '@/store/types';
+import { cacheTtlOptions } from '@/store/sampleSessions';
 import {
   LANGUAGE_SELECT_OPTIONS,
   localizeSelectOption,
@@ -1660,6 +1661,10 @@ export default function AIDock({
   );
 
   const isReadOnly = mode === 'running';
+  // Cache TTL is a session-open-time setting: changeable only before the first
+  // message lands. Once the conversation has any messages (or the dock is
+  // read-only because a run is in flight) the selector locks.
+  const cacheTtlLocked = isReadOnly || messages.length > 0;
   const sendShortcutHint = useMemo(
     () =>
       `${describeShortcutBinding(shortcutSettings['composer-send'])} ${t(
@@ -1840,6 +1845,13 @@ export default function AIDock({
       ? reusableChatText
       : draft.trim();
   const chatRunActive = useChatRunButton && activeChatting;
+  // Interjection ("插话"): while a chat turn is still streaming, a typed
+  // follow-up can be sent without waiting. It queues behind the in-flight turn
+  // and then resumes the same session (warm context) via --resume, instead of
+  // colliding on the native --session-id. With an empty box the button still
+  // acts as Stop. Favorite reruns (chatRunText from history) keep Stop-only so
+  // an accidental click can't fire a stale prompt mid-stream.
+  const chatInterject = chatRunActive && draft.trim().length > 0;
   useEffect(() => {
     if (!chatTitleEditing) setChatTitleDraft(chatTitle);
   }, [chatTitle, chatTitleEditing]);
@@ -5160,6 +5172,28 @@ export default function AIDock({
               <span>提及</span>
             </button>
 
+            {/* Session cache TTL — choose how long the session context is kept
+                alive between turns. Editable only before the conversation
+                starts (no messages yet); locked once the first message is sent
+                so a single session keeps one consistent TTL. */}
+            <Select
+              title={
+                cacheTtlLocked
+                  ? t(locale, 'dock.cacheTtlLocked')
+                  : t(locale, 'dock.cacheTtlTitle')
+              }
+              options={cacheTtlOptions}
+              value={String(composer.cacheTtlMinutes)}
+              onChange={(id) =>
+                setComposer({ cacheTtlMinutes: Number(id) })
+              }
+              disabled={cacheTtlLocked}
+              className="min-w-0 max-w-[8rem]"
+              icon="⏱"
+              variant="ghost"
+              showSelectedHint={false}
+            />
+
             <div className="ml-auto flex items-center gap-2">
               <Select
                 title={t(locale, 'dock.channelTitle')}
@@ -5187,6 +5221,12 @@ export default function AIDock({
               <button
                 type="button"
                 onClick={() => {
+                  // Interjection wins over Stop: a typed follow-up sent mid-
+                  // stream queues behind the running turn and resumes it.
+                  if (chatInterject) {
+                    submit();
+                    return;
+                  }
                   if (chatRunActive) {
                     stopChat();
                     return;
@@ -5198,6 +5238,7 @@ export default function AIDock({
                   submit();
                 }}
                 disabled={
+                  !chatInterject &&
                   !chatRunActive &&
                   (!(useChatRunButton ? chatRunText : draft.trim()) ||
                     isReadOnly ||
@@ -5205,31 +5246,37 @@ export default function AIDock({
                   )
                 }
                 title={
-                  chatRunActive
-                    ? t(locale, 'dock.stopChatTitle')
-                    : isReadOnly
-                      ? t(locale, 'dock.inputLockedTitle')
-                      : activeAiEditing
-                        ? t(locale, 'dock.aiGeneratingTitle')
-                        : useChatRunButton
-                          ? t(locale, 'dock.runChatTitle')
-                          : sendShortcutHint
+                  chatInterject
+                    ? t(locale, 'dock.interjectTitle')
+                    : chatRunActive
+                      ? t(locale, 'dock.stopChatTitle')
+                      : isReadOnly
+                        ? t(locale, 'dock.inputLockedTitle')
+                        : activeAiEditing
+                          ? t(locale, 'dock.aiGeneratingTitle')
+                          : useChatRunButton
+                            ? t(locale, 'dock.runChatTitle')
+                            : sendShortcutHint
                 }
                 aria-label={
-                  chatRunActive
-                    ? t(locale, 'dock.stopChatTitle')
-                    : useChatRunButton
-                      ? t(locale, 'dock.runChatTitle')
-                      : sendShortcutHint
+                  chatInterject
+                    ? t(locale, 'dock.interjectTitle')
+                    : chatRunActive
+                      ? t(locale, 'dock.stopChatTitle')
+                      : useChatRunButton
+                        ? t(locale, 'dock.runChatTitle')
+                        : sendShortcutHint
                 }
                 className={
                   'flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ' +
-                  (chatRunActive
+                  (chatRunActive && !chatInterject
                     ? 'border border-border bg-panel-2 text-fg-dim hover:border-accent hover:text-fg'
                     : 'bg-fg-dim text-bg hover:bg-fg')
                 }
               >
-                {chatRunActive ? (
+                {chatInterject ? (
+                  <ArrowUp size={16} strokeWidth={2.4} />
+                ) : chatRunActive ? (
                   <Square size={12} strokeWidth={2.2} />
                 ) : activeAiEditing
                   ? '…'

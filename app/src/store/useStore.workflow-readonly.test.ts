@@ -737,6 +737,7 @@ describe('workflow read-only guard', () => {
       composer: {
         permission: 'full',
         model: 'claude-sonnet-4',
+        cacheTtlMinutes: 5,
         workspace: '',
         workspaceFolders: [],
         modelStrategy: 'inherit',

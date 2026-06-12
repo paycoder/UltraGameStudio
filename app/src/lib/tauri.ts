@@ -144,7 +144,7 @@ export interface LocalModelHardware {
 export interface LocalFilePreview {
   path: string;
   fileName: string;
-  kind: 'text' | 'image' | 'binary';
+  kind: 'text' | 'image' | 'binary' | 'document';
   mime?: string | null;
   sizeBytes: number;
   truncated: boolean;

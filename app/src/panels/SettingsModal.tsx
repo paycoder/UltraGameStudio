@@ -181,8 +181,11 @@ import {
 } from '@/lib/consensusSettings';
 import {
   canRefreshFreeChannelModels,
+  endpointModelCacheKey,
   freeChannelModelOptions,
+  getCachedModels,
   providerModelOptions,
+  refreshEndpointModels,
   refreshFreeChannelModels,
   refreshProviderModels,
 } from '@/lib/modelLists';
@@ -3341,12 +3344,33 @@ function ImageProviderSettingsRow({
   onChange: (settings: ImageGenerationSettings) => void;
 }) {
   const [showKey, setShowKey] = useState(false);
+  const [modelRefresh, setModelRefresh] = useState<{
+    loading: boolean;
+    error: string | null;
+  }>({ loading: false, error: null });
   const keyValue = settings.providerKeys[provider.id] ?? '';
   const accountId = settings.providerAccountIds[provider.id] ?? '';
   const baseUrl = settings.providerBaseUrls[provider.id] ?? '';
+  const effectiveBaseUrl = imageProviderBaseUrl(provider.id, settings);
   const model = imageProviderModel(provider.id, settings);
   const ready = imageProviderReady(provider.id, settings);
   const KeyIcon = showKey ? EyeOff : Eye;
+
+  const cacheKey = endpointModelCacheKey('image', provider.id, effectiveBaseUrl);
+  const cachedModels = getCachedModels(cacheKey)?.models ?? [];
+  const modelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of [model, ...cachedModels, ...provider.models]) {
+      const value = item?.trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+    return out;
+  }, [model, cachedModels, provider.models]);
+  const canRefresh =
+    !!effectiveBaseUrl && (!provider.needsKey || keyValue.trim().length > 0);
 
   const patchProvider = (
     patch: Partial<{
@@ -3384,6 +3408,25 @@ function ImageProviderSettingsRow({
       else delete next.providerModels[provider.id];
     }
     onChange(next);
+  };
+
+  const refreshModels = async () => {
+    if (!canRefresh || modelRefresh.loading) return;
+    setModelRefresh({ loading: true, error: null });
+    try {
+      const result = await refreshEndpointModels({
+        cacheKey,
+        baseUrl: effectiveBaseUrl,
+        apiKey: keyValue,
+        fallback: [model, ...provider.models],
+      });
+      setModelRefresh({ loading: false, error: result.error ?? null });
+    } catch (err) {
+      setModelRefresh({
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
 
   return (
@@ -3428,19 +3471,17 @@ function ImageProviderSettingsRow({
         )}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        {provider.needsAccountId && (
+      <div className="grid gap-3 lg:grid-cols-2">
+        {provider.supportsBaseUrl && (
           <label className="block space-y-1">
             <span className="text-[11px] font-medium text-fg-dim">
-              {provider.accountIdLabel ?? t(locale, 'settings.imageGeneration.accountIdLabel')}
+              {t(locale, 'settings.models.baseUrl')}
             </span>
             <input
               type="text"
-              value={accountId}
-              onChange={(event) =>
-                patchProvider({ accountId: event.target.value })
-              }
-              placeholder={provider.accountIdPlaceholder ?? 'Cloudflare Account ID'}
+              value={baseUrl}
+              onChange={(event) => patchProvider({ baseUrl: event.target.value })}
+              placeholder={effectiveBaseUrl || provider.endpointPlaceholder}
               autoComplete="off"
               spellCheck={false}
               className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
@@ -3495,55 +3536,66 @@ function ImageProviderSettingsRow({
           </label>
         ) : null}
 
-        <label className="block space-y-1 md:col-span-2">
-          <span className="text-[11px] font-medium text-fg-dim">
-            {t(locale, 'settings.freeChannels.modelLabel')}
-          </span>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,13rem)]">
-            <input
-              type="text"
-              value={model}
-              onChange={(event) => patchProvider({ model: event.target.value })}
-              placeholder={provider.defaultModel}
-              autoComplete="off"
-              spellCheck={false}
-              className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
-            />
-            <select
-              value={provider.models.includes(model) ? model : ''}
-              onChange={(event) => {
-                if (event.target.value) {
-                  patchProvider({ model: event.target.value });
-                }
-              }}
-              className="h-[35px] w-full rounded-md border border-border bg-panel px-2 font-mono text-xs text-fg outline-none transition-colors focus:border-accent"
-            >
-              <option value="">{t(locale, 'settings.models.selectModel')}</option>
-              {provider.models.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </div>
-        </label>
-
-        {provider.supportsBaseUrl && (
-          <label className="block space-y-1 md:col-span-2">
+        {provider.needsAccountId && (
+          <label className="block space-y-1">
             <span className="text-[11px] font-medium text-fg-dim">
-              {t(locale, 'settings.models.baseUrl')}
+              {provider.accountIdLabel ?? t(locale, 'settings.imageGeneration.accountIdLabel')}
             </span>
             <input
               type="text"
-              value={baseUrl}
-              onChange={(event) => patchProvider({ baseUrl: event.target.value })}
-              placeholder={imageProviderBaseUrl(provider.id, settings) || provider.endpointPlaceholder}
+              value={accountId}
+              onChange={(event) =>
+                patchProvider({ accountId: event.target.value })
+              }
+              placeholder={provider.accountIdPlaceholder ?? 'Cloudflare Account ID'}
               autoComplete="off"
               spellCheck={false}
               className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
             />
           </label>
         )}
+
+        <label className="block space-y-1 lg:col-span-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-fg-dim">
+              {t(locale, 'settings.freeChannels.modelLabel')}
+            </span>
+            <button
+              type="button"
+              onClick={() => void refreshModels()}
+              disabled={!canRefresh || modelRefresh.loading}
+              title={
+                canRefresh
+                  ? t(locale, 'settings.models.fetchModels')
+                  : t(locale, 'settings.models.fetchModelsUnavailable')
+              }
+              className="inline-flex items-center gap-1 rounded border border-border bg-panel px-2 py-0.5 text-[11px] text-fg-dim transition-colors hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <RefreshCw
+                size={11}
+                strokeWidth={2}
+                className={modelRefresh.loading ? 'animate-spin' : undefined}
+              />
+              {t(locale, 'settings.models.fetchModels')}
+            </button>
+          </div>
+          <select
+            value={model}
+            onChange={(event) => patchProvider({ model: event.target.value })}
+            className="h-[35px] w-full rounded-md border border-border bg-panel px-2 font-mono text-xs text-fg outline-none transition-colors focus:border-accent"
+          >
+            {modelOptions.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+          {modelRefresh.error && (
+            <p className="text-[11px] leading-relaxed text-amber-300">
+              {modelRefresh.error}
+            </p>
+          )}
+        </label>
       </div>
     </div>
   );
@@ -3733,12 +3785,33 @@ function MusicProviderSettingsRow({
   onChange: (settings: MusicGenerationSettings) => void;
 }) {
   const [showKey, setShowKey] = useState(false);
+  const [modelRefresh, setModelRefresh] = useState<{
+    loading: boolean;
+    error: string | null;
+  }>({ loading: false, error: null });
   const keyProviderId = provider.keyProviderId ?? provider.id;
   const keyValue = settings.providerKeys[keyProviderId] ?? '';
   const baseUrl = settings.providerBaseUrls[provider.id] ?? '';
+  const effectiveBaseUrl = musicProviderBaseUrl(provider.id, settings);
   const model = musicProviderModel(provider.id, settings);
   const ready = musicProviderReady(provider.id, settings);
   const KeyIcon = showKey ? EyeOff : Eye;
+
+  const cacheKey = endpointModelCacheKey('music', provider.id, effectiveBaseUrl);
+  const cachedModels = getCachedModels(cacheKey)?.models ?? [];
+  const modelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of [model, ...cachedModels, ...provider.models]) {
+      const value = item?.trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+    return out;
+  }, [model, cachedModels, provider.models]);
+  const canRefresh =
+    !!effectiveBaseUrl && (!provider.needsKey || keyValue.trim().length > 0);
 
   const patchProvider = (
     patch: Partial<{
@@ -3775,6 +3848,25 @@ function MusicProviderSettingsRow({
       next.preferredProviderId = provider.id;
     }
     onChange(next);
+  };
+
+  const refreshModels = async () => {
+    if (!canRefresh || modelRefresh.loading) return;
+    setModelRefresh({ loading: true, error: null });
+    try {
+      const result = await refreshEndpointModels({
+        cacheKey,
+        baseUrl: effectiveBaseUrl,
+        apiKey: keyValue,
+        fallback: [model, ...provider.models],
+      });
+      setModelRefresh({ loading: false, error: result.error ?? null });
+    } catch (err) {
+      setModelRefresh({
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
 
   return (
@@ -3819,7 +3911,24 @@ function MusicProviderSettingsRow({
         )}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
+        {provider.supportsBaseUrl && (
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium text-fg-dim">
+              {t(locale, 'settings.models.baseUrl')}
+            </span>
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(event) => patchProvider({ baseUrl: event.target.value })}
+              placeholder={effectiveBaseUrl || provider.endpointPlaceholder}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
+            />
+          </label>
+        )}
+
         {provider.needsKey && (
           <label className="block space-y-1">
             <span className="text-[11px] font-medium text-fg-dim">
@@ -3862,58 +3971,47 @@ function MusicProviderSettingsRow({
           </label>
         )}
 
-        <label className="block space-y-1 md:col-span-2">
-          <span className="text-[11px] font-medium text-fg-dim">
-            {t(locale, 'settings.freeChannels.modelLabel')}
-          </span>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,13rem)]">
-            <input
-              type="text"
-              value={model}
-              onChange={(event) => patchProvider({ model: event.target.value })}
-              placeholder={provider.defaultModel}
-              autoComplete="off"
-              spellCheck={false}
-              className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
-            />
-            <select
-              value={provider.models.includes(model) ? model : ''}
-              onChange={(event) => {
-                if (event.target.value) {
-                  patchProvider({ model: event.target.value });
-                }
-              }}
-              className="h-[35px] w-full rounded-md border border-border bg-panel px-2 font-mono text-xs text-fg outline-none transition-colors focus:border-accent"
-            >
-              <option value="">{t(locale, 'settings.models.selectModel')}</option>
-              {provider.models.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </div>
-        </label>
-
-        {provider.supportsBaseUrl && (
-          <label className="block space-y-1 md:col-span-2">
+        <label className="block space-y-1 lg:col-span-2">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-medium text-fg-dim">
-              {t(locale, 'settings.models.baseUrl')}
+              {t(locale, 'settings.freeChannels.modelLabel')}
             </span>
-            <input
-              type="text"
-              value={baseUrl}
-              onChange={(event) => patchProvider({ baseUrl: event.target.value })}
-              placeholder={
-                musicProviderBaseUrl(provider.id, settings) ||
-                provider.endpointPlaceholder
+            <button
+              type="button"
+              onClick={() => void refreshModels()}
+              disabled={!canRefresh || modelRefresh.loading}
+              title={
+                canRefresh
+                  ? t(locale, 'settings.models.fetchModels')
+                  : t(locale, 'settings.models.fetchModelsUnavailable')
               }
-              autoComplete="off"
-              spellCheck={false}
-              className="w-full rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-sm text-fg outline-none transition-colors focus:border-accent"
-            />
-          </label>
-        )}
+              className="inline-flex items-center gap-1 rounded border border-border bg-panel px-2 py-0.5 text-[11px] text-fg-dim transition-colors hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <RefreshCw
+                size={11}
+                strokeWidth={2}
+                className={modelRefresh.loading ? 'animate-spin' : undefined}
+              />
+              {t(locale, 'settings.models.fetchModels')}
+            </button>
+          </div>
+          <select
+            value={model}
+            onChange={(event) => patchProvider({ model: event.target.value })}
+            className="h-[35px] w-full rounded-md border border-border bg-panel px-2 font-mono text-xs text-fg outline-none transition-colors focus:border-accent"
+          >
+            {modelOptions.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+          {modelRefresh.error && (
+            <p className="text-[11px] leading-relaxed text-amber-300">
+              {modelRefresh.error}
+            </p>
+          )}
+        </label>
       </div>
     </div>
   );

@@ -20,6 +20,7 @@
  */
 
 import type { ModelUsageReport } from '@/lib/usageMeter';
+import { INTERACTION_PROTOCOL } from '@/core/interaction';
 
 /** Default Anthropic model id (kept in sync with the Rust backend). */
 export const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -306,7 +307,10 @@ ${CAPTAIN_LOOP_GUIDANCE}
 export const SIMPLE_CHAT_SYSTEM = `你正在「简单 Workflow」里直接为用户服务，等价于直接用命令行/对话方式调用模型来处理简单问题。请直接根据用户输入作答或完成任务：
 - 不要生成、输出或修改 workflow 蓝图，不要输出 IRGraph 或任何 \`\`\`json 蓝图代码块。
 - 直接给出答案或结果；若处于命令行环境且任务确实需要，可在当前工作区做必要的读写/操作。
-- 回答简洁、直接、切题，不要反问或等待确认，除非信息严重不足。`;
+- 回答简洁、直接、切题，不要反问或等待确认，除非信息严重不足。
+- 当你确实需要用户做选择时，绝不要在正文里写"请回复 1/2/3"或用编号列表让用户输入数字；改用下方的交互协议输出一个交互块，前端会渲染成可点击的选项按钮。
+
+${INTERACTION_PROTOCOL}`;
 
 /**
  * AI 改图时为每个节点自动选模型的策略。与 store 的 ComposerSettings.modelStrategy

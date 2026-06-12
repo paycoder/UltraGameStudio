@@ -221,6 +221,8 @@ import {
   withPromptItemLocale,
 } from '@/lib/i18n';
 import {
+  CACHE_TTL_MINUTES_OPTIONS,
+  DEFAULT_CACHE_TTL_MINUTES,
   defaultComposer,
   initialActiveSessionId,
   modelOptions,
@@ -1044,6 +1046,20 @@ function workspaceFoldersFromMetadata(
   return projectSettingsFromMetadata(metadata).folders;
 }
 
+function normalizeCacheTtlMinutes(value: unknown): number {
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number(value)
+        : NaN;
+  return CACHE_TTL_MINUTES_OPTIONS.includes(
+    Math.floor(n) as (typeof CACHE_TTL_MINUTES_OPTIONS)[number],
+  )
+    ? Math.floor(n)
+    : DEFAULT_CACHE_TTL_MINUTES;
+}
+
 function normalizeComposerSettings(value: Partial<ComposerSettings> | undefined): ComposerSettings {
   const source = value ?? {};
   const workspace = normalizeWorkspacePath(source.workspace ?? defaultComposer.workspace);
@@ -1051,6 +1067,7 @@ function normalizeComposerSettings(value: Partial<ComposerSettings> | undefined)
     ...defaultComposer,
     ...source,
     workspace,
+    cacheTtlMinutes: normalizeCacheTtlMinutes(source.cacheTtlMinutes),
     workspaceFolders: normalizeWorkspaceFolderList(
       source.workspaceFolders,
       workspace,
@@ -2742,7 +2759,10 @@ async function createNewChatSession(): Promise<void> {
       sessions: sessionTree[workspaceId] ?? [session],
       sessionTree,
       activeSessionId: session.id,
-      selectedWorkspaceId: workspaceId,
+      // Creating a session must not change the top switcher's pinned workspace.
+      // Only explicit workspace navigation may move the pin; here we just keep
+      // the existing pin (initializing it when none has been chosen yet).
+      selectedWorkspaceId: s.selectedWorkspaceId ?? workspaceId,
       messages: [],
       canvasViewport: null,
       currentFilePath: null,
@@ -2958,7 +2978,9 @@ async function openWorkflowInSession(
       mode: 'design',
       currentFilePath: path ?? null,
       activeWorkspaceId: workspaceId,
-      selectedWorkspaceId: workspaceId,
+      // Opening a workflow into a session must not move the top switcher's
+      // pinned workspace. Preserve the existing pin (initializing when unset).
+      selectedWorkspaceId: s.selectedWorkspaceId ?? workspaceId,
       workspaces,
       sessions: sessionTree[workspaceId] ?? [session],
       sessionTree,
@@ -5254,6 +5276,16 @@ ${previousReply.slice(0, 4000)}
     ): Promise<string> => {
       await changesBaselineReady;
       const policy = timeoutPolicyForSelection(cli.selection, prompt);
+      // Session cache TTL (minutes) is a per-session keep-alive knob chosen in
+      // the composer before the conversation starts. It maps onto the CLI
+      // idle/keep-alive timeout: a larger TTL keeps the session context alive
+      // longer between turns. Never drop below the model-tier-derived minimum.
+      const cacheTtlSeconds =
+        normalizeCacheTtlMinutes(state.composer.cacheTtlMinutes) * 60;
+      const idleTimeoutSeconds = Math.max(
+        policy.idleTimeoutSeconds,
+        cacheTtlSeconds,
+      );
       const startedAt = Date.now();
       let firstProgressAt: number | undefined;
       const runId = opts.runId ?? makeCliRunId();
@@ -5266,7 +5298,7 @@ ${previousReply.slice(0, 4000)}
         const text = await aiEditViaCli(prompt, cli.adapter, {
           ...opts,
           timeoutSeconds: policy.timeoutSeconds,
-          idleTimeoutSeconds: policy.idleTimeoutSeconds,
+          idleTimeoutSeconds,
           runId,
           onUsage: (raw) => {
             realUsage = mergeUsageReports(realUsage, usageReportFromCliUsage(raw));
@@ -5777,62 +5809,101 @@ ${previousReply.slice(0, 4000)}
         const usageBefore = readUsageMeterSnapshot(usageMeterContext);
         try {
           newBubble(withAiTiming('⟳ 生成中…'));
-          const turnMessageId = activeId;
-          let answer = '';
           let routeLine = gatewayRouteLine(directRoute);
-          if (useCli) {
-            const cli = await resolveAiCliRoute();
-            routeLine = gatewayRouteLine(cli);
-            setActive(withAiTiming(routedBody(routeLine, '⟳ 生成中…')));
-            nativeSession = replayFavoriteSimpleChat
-              ? null
-              : chatNativeSessionFor(ch, cli);
-            const nativeResume = nativeSession?.started === true;
-            const coveredMessageCount = Math.min(
-              nativeSession?.coveredMessageCount ?? 0,
-              priorMessages.length,
-            );
-            const unseenTranscript =
-              nativeSession && nativeResume
-                ? chatTranscript(priorMessages.slice(coveredMessageCount))
-                : '';
-            const promptBody =
-              nativeSession && nativeResume
-                ? unseenTranscript
-                  ? `以下是你这个模型会话尚未看到的中间对话，请先吸收上下文，再回答最后一个「用户」消息：\n\n${unseenTranscript}\n\n用户：${trimmed}`
-                  : trimmed
+          // The model may emit a click-to-choose interaction block instead of a
+          // final answer (see core/interaction.ts). Loop: call → if it asked,
+          // render the widget, wait for the user's click, feed the answer back,
+          // and re-invoke; otherwise finalize. Bounded so a model that keeps
+          // asking can't spin forever.
+          let continuation = '';
+          let finalAnswer = '';
+          for (let round = 0; round < MAX_INTERACTION_ROUNDS; round += 1) {
+            let answer = '';
+            if (useCli) {
+              const cli = await resolveAiCliRoute();
+              routeLine = gatewayRouteLine(cli);
+              setActive(withAiTiming(routedBody(routeLine, '⟳ 生成中…')));
+              nativeSession = replayFavoriteSimpleChat
+                ? null
+                : chatNativeSessionFor(ch, cli);
+              const nativeResume = nativeSession?.started === true;
+              const coveredMessageCount = Math.min(
+                nativeSession?.coveredMessageCount ?? 0,
+                priorMessages.length,
+              );
+              const unseenTranscript =
+                nativeSession && nativeResume
+                  ? chatTranscript(priorMessages.slice(coveredMessageCount))
+                  : '';
+              const basePromptBody =
+                nativeSession && nativeResume
+                  ? unseenTranscript
+                    ? `以下是你这个模型会话尚未看到的中间对话，请先吸收上下文，再回答最后一个「用户」消息：\n\n${unseenTranscript}\n\n用户：${trimmed}`
+                    : trimmed
+                  : chatPrompt;
+              // On a continuation round the native session already carries the
+              // prior context, so send only the user's answer; otherwise send
+              // the full prompt body.
+              const promptBody = continuation || basePromptBody;
+              let live = '';
+              answer = await aiEditViaCliWithSpeed(`${chatSystem}\n\n${promptBody}`, cli, {
+                permission: chatPermission,
+                model: cli.model,
+                cliCommand: cli.cliCommand,
+                env: cli.env,
+                ...aiEditCliWorkspaceOptions(ch, state.composer),
+                sessionId: nativeSession?.sessionId,
+                resume: nativeSession ? nativeResume : undefined,
+                onProgress: (chunk) => {
+                  live += chunk;
+                  setActive(withAiTiming(routedBody(routeLine, liveProse(live) || '⟳ 生成中…')));
+                },
+              });
+              if (nativeSession) nativeSession.started = true;
+              if (!answer.trim() && live.trim()) answer = live;
+            } else {
+              let full = '';
+              setActive(withAiTiming(routedBody(routeLine, '⟳ 生成中…')));
+              // The direct API call is stateless, so a continuation round must
+              // resend the full context plus the user's answer.
+              const userContent = continuation
+                ? `${chatPrompt}\n\n${continuation}`
                 : chatPrompt;
-            let live = '';
-            answer = await aiEditViaCliWithSpeed(`${chatSystem}\n\n${promptBody}`, cli, {
-              permission: chatPermission,
-              model: cli.model,
-              cliCommand: cli.cliCommand,
-              env: cli.env,
-              ...aiEditCliWorkspaceOptions(ch, state.composer),
-              sessionId: nativeSession?.sessionId,
-              resume: nativeSession ? nativeResume : undefined,
-              onProgress: (chunk) => {
-                live += chunk;
-                setActive(withAiTiming(routedBody(routeLine, live)));
-              },
-            });
-            if (nativeSession) nativeSession.started = true;
-            if (!answer.trim() && live.trim()) answer = live;
-          } else {
-            let full = '';
-            setActive(withAiTiming(routedBody(routeLine, '⟳ 生成中…')));
-            const returned = await completeDirectWithSpeed({
-              system: chatSystem,
-              userContent: chatPrompt,
-              onDelta: (chunk) => {
-                full += chunk;
-                setActive(withAiTiming(routedBody(routeLine, full)));
-              },
-            });
-            answer = full || returned;
+              const returned = await completeDirectWithSpeed({
+                system: chatSystem,
+                userContent,
+                onDelta: (chunk) => {
+                  full += chunk;
+                  setActive(withAiTiming(routedBody(routeLine, liveProse(full) || '⟳ 生成中…')));
+                },
+              });
+              answer = full || returned;
+            }
+            const req = parseInteraction(answer);
+            if (!req) {
+              finalAnswer = answer;
+              break;
+            }
+            // The model is asking the user to choose. Show whatever prose came
+            // before the block, render the clickable widget, and wait.
+            setActive(
+              withAiTiming(routedBody(routeLine, stripInteraction(answer) || '（请选择）')),
+              true,
+            );
+            persistAiMessages();
+            const userAnswer = await awaitInteraction(null, req, ch);
+            if (!userAnswer) {
+              // Skipped: finalize with whatever prose we already have.
+              finalAnswer = stripInteraction(answer);
+              break;
+            }
+            // Continue in a fresh bubble with the user's choice fed back.
+            newBubble(withAiTiming('⟳ 生成中…'));
+            continuation = formatAnswerForPrompt(req, userAnswer);
           }
+          const turnMessageId = activeId;
           setActive(
-            withAiTiming(routedBody(routeLine, answer.trim() || '（模型没有返回内容）')),
+            withAiTiming(routedBody(routeLine, finalAnswer.trim() || '（模型没有返回内容）')),
             true,
           );
           if (useCli && !replayFavoriteSimpleChat && nativeSession) {

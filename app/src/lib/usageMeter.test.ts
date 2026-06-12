@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  preferRicherSnapshot,
   readUsageMeterSnapshot,
+  rebuildSnapshotFromTurns,
   recordModelUsageForRoute,
   recordEstimatedModelUsageForSelection,
   sessionCachePercent,
@@ -227,5 +229,72 @@ describe('usage meter', () => {
     expect(delta.totalTokens).toBeGreaterThan(0);
     expect(delta.estimated).toBe(true);
     expect(delta.cachePercent).toBe(0);
+  });
+
+  it('rebuilds a session snapshot from persisted message turns', () => {
+    const snapshot = rebuildSnapshotFromTurns([
+      undefined,
+      {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cachedInputTokens: 40,
+        cachePercent: 40,
+        estimated: false,
+      },
+      {
+        inputTokens: 50,
+        outputTokens: 10,
+        totalTokens: 60,
+        cachedInputTokens: 0,
+        cachePercent: 0,
+        estimated: true,
+      },
+    ]);
+    expect(snapshot.totals.calls).toBe(2);
+    expect(snapshot.totals.totalTokens).toBe(180);
+    expect(snapshot.totals.inputTokens).toBe(150);
+    // Cache % counts real turns only: 40 cached / 100 real input.
+    expect(sessionCachePercent(snapshot)).toBeCloseTo(40, 5);
+  });
+
+  it('returns null cache % when rebuilt from estimated-only turns', () => {
+    const snapshot = rebuildSnapshotFromTurns([
+      {
+        inputTokens: 80,
+        outputTokens: 10,
+        totalTokens: 90,
+        cachedInputTokens: 0,
+        cachePercent: 0,
+        estimated: true,
+      },
+    ]);
+    expect(snapshot.totals.totalTokens).toBe(90);
+    expect(sessionCachePercent(snapshot)).toBeNull();
+  });
+
+  it('prefers whichever snapshot carries more tokens', () => {
+    const live = rebuildSnapshotFromTurns([
+      {
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+        cachedInputTokens: 0,
+        cachePercent: 0,
+        estimated: false,
+      },
+    ]);
+    const rebuilt = rebuildSnapshotFromTurns([
+      {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        cachedInputTokens: 0,
+        cachePercent: 0,
+        estimated: false,
+      },
+    ]);
+    expect(preferRicherSnapshot(live, rebuilt)).toBe(rebuilt);
+    expect(preferRicherSnapshot(rebuilt, live)).toBe(rebuilt);
   });
 });

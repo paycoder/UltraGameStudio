@@ -888,6 +888,35 @@ export const modelOptions: SelectOption[] = [
 ];
 
 /**
+ * 会话缓存时间(TTL)可选项，单位分钟。决定一次会话在没有新输出时上下文/进程的
+ * 保活时长(映射到 CLI 的 idle/keep-alive 超时)。默认 5 分钟；只在会话开启前可改。
+ */
+export const CACHE_TTL_MINUTES_OPTIONS = [5, 10, 20, 30, 40, 50, 60] as const;
+
+/** Default session cache TTL in minutes (matches the CLI 300s idle default). */
+export const DEFAULT_CACHE_TTL_MINUTES = 5;
+
+export const cacheTtlOptions: SelectOption[] = CACHE_TTL_MINUTES_OPTIONS.map(
+  (minutes) => ({
+    id: String(minutes),
+    label: `${minutes} 分钟`,
+    translations: {
+      'zh-CN': { label: `${minutes} 分钟` },
+      'en-US': { label: `${minutes} min` },
+      'fr-FR': { label: `${minutes} min` },
+      'ru-RU': { label: `${minutes} мин` },
+      'es-ES': { label: `${minutes} min` },
+      'hi-IN': { label: `${minutes} मिनट` },
+      'ar-SA': { label: `${minutes} دقيقة` },
+      'pt-BR': { label: `${minutes} min` },
+      'ja-JP': { label: `${minutes} 分` },
+      'de-DE': { label: `${minutes} Min` },
+      'ko-KR': { label: `${minutes}분` },
+    },
+  }),
+);
+
+/**
  * Default composer settings. Permission/model default to the first option;
  * workspace starts empty — it is chosen via the native folder picker and the
  * dropdown shows the user's previously-selected folders (see workspaceHistory).
@@ -895,6 +924,7 @@ export const modelOptions: SelectOption[] = [
 export const defaultComposer: ComposerSettings = {
   permission: permissionOptions[0].id,
   model: modelOptions[0].id,
+  cacheTtlMinutes: DEFAULT_CACHE_TTL_MINUTES,
   workspace: '',
   workspaceFolders: [],
   modelStrategy: 'inherit',

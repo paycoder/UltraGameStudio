@@ -177,6 +177,12 @@ export interface ComposerSettings {
   permission: string;
   /** matches a modelOptions[].id */
   model: string;
+  /**
+   * 会话缓存时间(TTL)，单位分钟。决定一次会话在没有新输出时上下文/进程的
+   * 保活时长(映射到 CLI 的 idle/keep-alive 超时)。仅允许 5/10/20/30/40/50/60,
+   * 默认 5。会话开启(发出首条消息)后锁定，不再可改。
+   */
+  cacheTtlMinutes: number;
   /** absolute path of the selected workspace folder ('' = none chosen yet) */
   workspace: string;
   /** Additional workspace folders attached to the current session. */

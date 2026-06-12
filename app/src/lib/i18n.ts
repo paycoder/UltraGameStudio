@@ -440,6 +440,8 @@ const UI_FULL = {
     'dock.permissionTitle': '权限设定',
     'dock.modelTitle': '运行时',
     'dock.channelTitle': '渠道',
+    'dock.cacheTtlTitle': '缓存时间',
+    'dock.cacheTtlLocked': '会话已开启，缓存时间不可修改',
     'dock.modelVersionTitle': '模型版本',
     'dock.modelVersionLoading': '正在获取模型列表…',
     'dock.channelSystemDefault': '系统默认',
@@ -484,6 +486,7 @@ const UI_FULL = {
     'dock.aiGeneratingTitle': 'AI 生成中…',
     'dock.runChatTitle': '运行当前会话输入',
     'dock.stopChatTitle': '停止当前会话生成',
+    'dock.interjectTitle': '插入发送（排队续接当前会话）',
     'dock.modelSwitchBlockedTip':
       '当前回答仍在使用原模型生成。可以继续输入或切换模型，但要等回答结束后，才能用新模型发送。',
     'dock.runningStop': '停止',
@@ -1341,6 +1344,8 @@ const UI_FULL = {
     'dock.permissionTitle': 'Permission',
     'dock.modelTitle': 'Runtime',
     'dock.channelTitle': 'Channel',
+    'dock.cacheTtlTitle': 'Cache TTL',
+    'dock.cacheTtlLocked': 'Session started; cache TTL is locked',
     'dock.modelVersionTitle': 'Model version',
     'dock.modelVersionLoading': 'Fetching model list…',
     'dock.channelSystemDefault': 'System default',
@@ -1385,6 +1390,7 @@ const UI_FULL = {
     'dock.aiGeneratingTitle': 'AI is generating…',
     'dock.runChatTitle': 'Run current chat input',
     'dock.stopChatTitle': 'Stop current chat generation',
+    'dock.interjectTitle': 'Send now (queue onto the running chat)',
     'dock.modelSwitchBlockedTip':
       'Current answer is still running on the previous model. You can keep typing or switch models, but send with the new model after it finishes.',
     'dock.runningStop': 'Stop',

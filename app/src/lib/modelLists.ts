@@ -89,6 +89,57 @@ export function getCachedModels(key: string): CachedModelList | null {
   return cached && cached.models.length > 0 ? cached : null;
 }
 
+/** Cache key for image/music provider model lists (keyed by base URL). */
+export function endpointModelCacheKey(
+  scope: 'image' | 'music',
+  providerId: string,
+  baseUrl: string,
+): string {
+  return [scope, providerId, stripTrailingSlash(baseUrl).toLowerCase()].join(':');
+}
+
+/**
+ * Fetch the model list for an OpenAI-compatible endpoint (image/music
+ * commercial providers). Results are cached so the select stays populated
+ * across panel reopens. Falls back to cached/catalog models on failure.
+ */
+export async function refreshEndpointModels(params: {
+  cacheKey: string;
+  baseUrl: string;
+  apiKey?: string;
+  fallback?: string[];
+}): Promise<ModelListResult> {
+  const fallback = uniqueModels(params.fallback ?? []);
+  const urls = modelListUrls(params.baseUrl, 'openai');
+  if (urls.length === 0) {
+    return { models: fallback, source: 'catalog' };
+  }
+  try {
+    const response = await listRemoteModels({
+      urls,
+      apiKey: params.apiKey ?? '',
+      transport: 'openai',
+    });
+    const models = uniqueModels(response.models);
+    if (models.length > 0) {
+      const cached = saveCachedModels(params.cacheKey, models);
+      return { models: cached.models, source: 'remote', updatedAt: cached.updatedAt };
+    }
+    return { models: fallback, source: 'catalog' };
+  } catch (err) {
+    const cached = getCachedModels(params.cacheKey);
+    if (cached) {
+      return {
+        models: cached.models,
+        source: 'cache',
+        updatedAt: cached.updatedAt,
+        error: errorMessage(err),
+      };
+    }
+    return { models: fallback, source: 'catalog', error: errorMessage(err) };
+  }
+}
+
 function uniqueModels(models: Array<string | undefined | null>): string[] {
   const out: string[] = [];
   const seen = new Set<string>();

@@ -9,7 +9,9 @@ import {
 } from '@/lib/contextUsage';
 import { RUNTIME_ADAPTERS, type RuntimeAdapterId } from '@/lib/adapters';
 import {
+  preferRicherSnapshot,
   readUsageMeterSnapshot,
+  rebuildSnapshotFromTurns,
   sessionCachePercent,
   subscribeUsageMeter,
 } from '@/lib/usageMeter';
@@ -90,15 +92,26 @@ export default function StatusBar() {
     () => ({ workspaceId: activeWorkspaceId, sessionId: activeSessionId }),
     [activeWorkspaceId, activeSessionId],
   );
-  const [usage, setUsage] = useState(() =>
+  const [liveUsage, setLiveUsage] = useState(() =>
     readUsageMeterSnapshot(usageContext),
   );
 
   useEffect(() => {
-    const refresh = () => setUsage(readUsageMeterSnapshot(usageContext));
+    const refresh = () => setLiveUsage(readUsageMeterSnapshot(usageContext));
     refresh();
     return subscribeUsageMeter(refresh);
   }, [usageContext]);
+
+  // Historical sessions opened on another device / after the meter shipped have
+  // no live local snapshot, so the status bar would read 0 / `--`. Each message
+  // still carries its turn usage; rebuild a snapshot from those and prefer
+  // whichever (live vs rebuilt) carries more accumulated tokens.
+  const usage = useMemo(() => {
+    const rebuilt = rebuildSnapshotFromTurns(
+      messages.map((message) => message.usage),
+    );
+    return preferRicherSnapshot(liveUsage, rebuilt);
+  }, [liveUsage, messages]);
 
   const route = useMemo(() => {
     const selection = workflowDefaultGatewaySelection(workflow, composerModel);

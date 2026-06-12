@@ -510,6 +510,78 @@ export function recordEstimatedModelUsageForSelection(
 }
 
 /**
+ * Rebuild a session snapshot from the per-turn usage deltas stamped onto each
+ * assistant message. The live meter only accumulates while real-time calls land
+ * in *this* client's localStorage, so opening a historical session (different
+ * device, cleared storage, or pre-meter session) leaves the status bar at 0 /
+ * `--`. Each persisted message still carries its turn's usage, so we can fold
+ * those back into an equivalent snapshot for display.
+ *
+ * Note: a turn delta sums every sub-call of that turn and only exposes a single
+ * `estimated` flag (true when no real input landed). For a mixed turn we credit
+ * the whole turn's input as "real" so the cache ratio stays close to reality;
+ * mixed turns are rare in practice.
+ */
+export function rebuildSnapshotFromTurns(
+  turns: ReadonlyArray<UsageTurnDelta | null | undefined>,
+): UsageMeterSnapshot {
+  let lastReal: UsageMeterCall | null = null;
+  const totals = { ...EMPTY_SNAPSHOT.totals };
+  for (const turn of turns) {
+    if (!turn) continue;
+    const inputTokens = numberFrom(turn.inputTokens) ?? 0;
+    const outputTokens = numberFrom(turn.outputTokens) ?? 0;
+    const totalTokens =
+      numberFrom(turn.totalTokens) ?? inputTokens + outputTokens;
+    const cachedInputTokens = Math.min(
+      inputTokens,
+      numberFrom(turn.cachedInputTokens) ?? 0,
+    );
+    if (totalTokens <= 0 && inputTokens <= 0 && outputTokens <= 0) continue;
+    const isReal = turn.estimated === false;
+    totals.calls += 1;
+    totals.inputTokens += inputTokens;
+    totals.outputTokens += outputTokens;
+    totals.totalTokens += totalTokens;
+    totals.cachedInputTokens += cachedInputTokens;
+    totals.realInputTokens += isReal ? inputTokens : 0;
+    totals.realCachedInputTokens += isReal ? cachedInputTokens : 0;
+    if (isReal) {
+      lastReal = {
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        cachedInputTokens,
+        cacheCreationInputTokens: 0,
+        cachePercent: numberFrom(turn.cachePercent) ?? 0,
+        estimated: false,
+        providerLabel: '',
+        modelLabel: '',
+        updatedAt: 0,
+      };
+    }
+  }
+  return {
+    version: 1,
+    totals,
+    lastCall: lastReal ?? ZERO_CALL,
+  };
+}
+
+/**
+ * Pick whichever snapshot carries more accumulated usage. Used so a historical
+ * session that has live local usage keeps it, while one that has none falls back
+ * to the rebuilt-from-messages snapshot.
+ */
+export function preferRicherSnapshot(
+  live: UsageMeterSnapshot,
+  rebuilt: UsageMeterSnapshot,
+): UsageMeterSnapshot {
+  if (live.totals.totalTokens >= rebuilt.totals.totalTokens) return live;
+  return rebuilt;
+}
+
+/**
  * Session-wide cache-hit percentage, computed from *real* (server-reported)
  * calls only. Returns null when no real usage has been recorded yet, so callers
  * can render a `--` placeholder instead of a misleading 0%.

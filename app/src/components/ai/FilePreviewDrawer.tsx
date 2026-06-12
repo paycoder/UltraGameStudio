@@ -20,6 +20,7 @@ import {
   type FileRef,
 } from './lib/filePath';
 import Markdown from './Markdown';
+import DocumentPreview from './DocumentPreview';
 
 type PreviewState =
   | { status: 'idle' }
@@ -425,6 +426,20 @@ export default function FilePreviewDrawer({
               {file.mime ?? 'text/plain'} · {formatBytes(file.sizeBytes)}
             </div>
             <Markdown text={markdown} />
+          </div>
+        )}
+
+        {file?.kind === 'document' && file.base64 && file.mime && (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 items-center gap-2 border-b border-border-soft px-3 py-1.5 font-mono text-[10px] text-fg-faint">
+              <FileText size={12} />
+              {file.mime} · {formatBytes(file.sizeBytes)}
+            </div>
+            <DocumentPreview
+              base64={file.base64}
+              mime={file.mime}
+              fileName={file.fileName}
+            />
           </div>
         )}
 
