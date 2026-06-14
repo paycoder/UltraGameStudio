@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Brain, ChevronRight } from 'lucide-react';
 import Markdown from './Markdown';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 /**
  * Collapsible "reasoning / thinking" block. Starts open while streaming, then
@@ -20,6 +22,7 @@ export default function ReasoningBlock({
   streaming: boolean;
 }) {
   const [open, setOpen] = useState(true);
+  const locale = useStore((s) => s.locale);
   const userToggled = useRef(false);
   const collapsedOnce = useRef(false);
   const startRef = useRef<number | null>(null);
@@ -63,9 +66,11 @@ export default function ReasoningBlock({
 
   const header = done
     ? seconds > 0
-      ? `已思考 ${seconds}s`
-      : '思考过程'
-    : '思考中…';
+      ? locale === 'zh-CN'
+        ? `已思考 ${seconds}s`
+        : `Thought for ${seconds}s`
+      : t(locale, 'chat.thoughtProcess')
+    : t(locale, 'chat.thinking');
 
   return (
     <div className="ai-reasoning my-2 overflow-hidden rounded-lg border border-border-soft">

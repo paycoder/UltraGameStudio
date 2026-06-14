@@ -98,7 +98,9 @@ import {
 } from '@/lib/sessionNotification';
 import {
   generateImage,
+  IMAGE_PROVIDERS,
   imageProviderById,
+  imageProviderReady,
   loadImageGenerationSettings,
   preferredReadyImageProviderId,
   stripImageCommand,
@@ -603,7 +605,7 @@ export interface StoreState {
   sendPrompt: (
     text: string,
     options?: { forceGameExperts?: boolean; gameExpertIds?: string[] },
-  ) => void;
+  ) => boolean;
   generateImagePrompt: (
     text: string,
     options?: { providerId?: ImageProviderId; model?: string },
@@ -860,8 +862,13 @@ function projectMcpGuidanceForState(
     `${server.id} ${server.label}`.toLowerCase().includes('unreal') ||
     server.id.toLowerCase().includes('ue-mcp'),
   );
+  const hasGodotMcp = enabledServers.some((server) =>
+    `${server.id} ${server.label}`.toLowerCase().includes('godot'),
+  );
   const realtimeRule = hasUnrealMcp
     ? '当用户问题涉及 Unreal Editor、当前打开场景、Actor、资源、材质、渲染状态、PIE 或编辑器实时状态时，优先使用 Unreal MCP 工具读取编辑器实时状态；命令行、文件搜索和日志作为补充。'
+    : hasGodotMcp
+      ? '当用户问题涉及 Godot Editor、运行中项目、场景、节点、资源、GDScript、调试输出或编辑器实时状态时，优先使用 Godot MCP 工具读取或操作实时状态；命令行、文件搜索和日志作为补充。'
     : '当用户问题涉及已配置工具能直接读取的运行时状态时，优先使用对应 MCP 工具；命令行、文件搜索和日志作为补充。';
 
   return `\n\n【全局 MCP】\n当前工作区已启用 MCP server，所有模型请求都应优先使用这些实时工具：\n${serverLines}\n${realtimeRule}\n若 MCP 工具不可用或连接失败，先说明原因，再退回本地文件/日志分析。`;
@@ -1456,6 +1463,36 @@ function imageResultMarkdown(result: {
     .map((src, index) => `![生成图片 ${index + 1}](${src})`)
     .join('\n\n');
   return `${routeLine}\n✓ 图片生成完成\n\n提示词：${result.prompt}\n\n${imageLines}`;
+}
+
+/**
+ * Translate the internal image-generation error codes / raw provider errors
+ * into actionable Chinese guidance. `generateImage` throws sentinel strings
+ * like `NO_READY_IMAGE_PROVIDER` or `IMAGE_PROVIDER_NOT_READY:<id>` that mean
+ * nothing to a user; surface them as concrete next steps instead.
+ */
+function friendlyImageGenerationError(message: string): string {
+  if (message === 'IMAGE_GENERATION_DISABLED') {
+    return '生图功能已关闭。请在 设置 > 生图 中打开“启用生图”开关。';
+  }
+  if (message === 'NO_READY_IMAGE_PROVIDER') {
+    return '尚未配置可用的图片 Provider。请在 设置 > 生图 中选择一个图片模型渠道，并填写对应的 API Key / Base URL。';
+  }
+  if (message.startsWith('IMAGE_PROVIDER_NOT_READY:')) {
+    const providerId = message.slice('IMAGE_PROVIDER_NOT_READY:'.length);
+    const label = isImageProviderId(providerId)
+      ? imageProviderById(providerId).label
+      : providerId;
+    return `图片 Provider「${label}」尚未配置完整（缺少 API Key、Account ID 或 Base URL）。请在 设置 > 生图 中补全后重试。`;
+  }
+  return message;
+}
+
+function isImageProviderId(value: unknown): value is ImageProviderId {
+  return (
+    typeof value === 'string' &&
+    IMAGE_PROVIDERS.some((provider) => provider.id === value)
+  );
 }
 
 function musicResultMarkdown(result: {
@@ -2175,6 +2212,37 @@ function scheduleSessionRunCompletedNotification(
   if (!isNotifiableCompletionStatus(status)) return;
   globalThis.setTimeout(() => {
     notifySessionRunCompleted(sessionKey, status);
+  }, 0);
+}
+
+function notifySessionWaitingInput(
+  sessionKey: WorkflowSessionKey,
+  req: InteractionRequest,
+): void {
+  const state = useStore.getState();
+  const session = sessionForKey(state, sessionKey);
+  const sessionTitle =
+    session?.title?.trim() ||
+    state.workflow.meta?.name?.trim() ||
+    null;
+  void notifySessionComplete({
+    status: 'waitingInput',
+    sessionTitle,
+    detail: req.prompt,
+    workspaceId: sessionKey.workspaceId,
+    sessionId: sessionKey.sessionId,
+  });
+}
+
+function scheduleSessionWaitingInputNotification(
+  sessionKey: WorkflowSessionKey | null,
+  req: InteractionRequest,
+  messageId: string,
+): void {
+  if (!sessionKey) return;
+  globalThis.setTimeout(() => {
+    if (!pendingInteractionResolvers.has(messageId)) return;
+    notifySessionWaitingInput(sessionKey, req);
   }, 0);
 }
 
@@ -5045,7 +5113,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // authoring instruction so the model emits a ```comfyui block instead of
     // editing the workflow blueprint. This reuses all channel/persistence logic
     // and renders the result as an embedded node graph in the chat stream.
-    get().sendPrompt(`${COMFY_PROMPT_SYSTEM}\n\n用户需求：\n${prompt}`);
+    void get().sendPrompt(`${COMFY_PROMPT_SYSTEM}\n\n用户需求：\n${prompt}`);
   },
 
   generateUiPrompt: (text) => {
@@ -5055,7 +5123,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // design instruction tied to the project's default UI channel so the model
     // produces interface specs / deliverables instead of editing the workflow
     // blueprint. Reuses all channel/persistence logic.
-    get().sendPrompt(`${uiDesignPromptSystem()}\n\n用户需求：\n${prompt}`);
+    void get().sendPrompt(`${uiDesignPromptSystem()}\n\n用户需求：\n${prompt}`);
   },
 
   searchMeshLibraryPrompt: (text) => {
@@ -5119,7 +5187,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   sendPrompt: (text, options) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) return false;
     // Game experts / producer orchestration are now explicit-only: they never
     // auto-fire from chat text. The host opts in by passing forceGameExperts
     // (wired to the multilingual `/game` slash command in AIDock). When the
@@ -5128,7 +5196,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const forceGameExperts = options?.forceGameExperts === true;
     const pinnedGameExpertIds = options?.gameExpertIds ?? [];
     const state = useStore.getState();
-    if (isWorkflowReadOnly(state)) return;
+    if (isWorkflowReadOnly(state)) return false;
     // Image generation is routed explicitly (the /image-mode-* sticky mode and
     // /image one-shot command in AIDock), never inferred from message text here.
     // sendPrompt always means AI editing / workflow authoring.
@@ -5147,11 +5215,11 @@ export const useStore = create<StoreState>((set, get) => ({
         : 'none';
     if (activeChatAppend === 'selection-mismatch') {
       set({ blockedSendTip: 'model-switched-while-chatting' });
-      return;
+      return false;
     }
     if (activeChatAppend === 'appended') {
       if (state.blockedSendTip) set({ blockedSendTip: null });
-      return;
+      return true;
     }
     if (state.blockedSendTip) set({ blockedSendTip: null });
     const workspaceRootPath = sessionChangesRootPathForSession(
@@ -5307,7 +5375,7 @@ ${previousReply.slice(0, 4000)}
           'error',
         );
         removeAiEditChannel(ch);
-        return;
+        return true;
       }
       // [dynamic-only refactor] 本地意图引擎(applyIntent)蓝图编辑已停用。
       // 非简单模式 + 无后端：仅提示，不再做关键词改图。
@@ -5315,7 +5383,7 @@ ${previousReply.slice(0, 4000)}
         `当前环境无法调用所选运行时。请在桌面版中使用本地 CLI，或切回 Claude Code 并配置 API key。`,
       );
       removeAiEditChannel(ch);
-      return;
+      return true;
     }
 
     // "grill-me" and explicit clarification prompts opt into interrogation
@@ -6256,7 +6324,7 @@ ${previousReply.slice(0, 4000)}
       } else {
         void runChatTurn();
       }
-      return;
+      return true;
     }
 
     void (async () => {
@@ -6429,6 +6497,7 @@ ${previousReply.slice(0, 4000)}
         removeAiEditChannel(ch);
       }
     })();
+    return true;
   },
 
   clearBlockedSendTip: () => set({ blockedSendTip: null }),
@@ -8446,8 +8515,37 @@ function startImageGenerationTurn(
   const generationPrompt = modeContextPrompt(state, 'image', prompt);
   const sessionKey = activeWorkflowSessionKey(state);
   const settings = loadImageGenerationSettings();
-  if (!settings.enabled) return;
+  // Pre-flight: surface a visible, actionable note instead of silently doing
+  // nothing when the channel can't run. A silent return is exactly the "image
+  // mode was on but nothing happened" symptom users hit.
+  if (!settings.enabled) {
+    useStore
+      .getState()
+      .appendChatNote(
+        `✗ ${friendlyImageGenerationError('IMAGE_GENERATION_DISABLED')}`,
+        'system',
+      );
+    return;
+  }
   const providerId = options.providerId ?? preferredReadyImageProviderId(settings);
+  if (!providerId) {
+    useStore
+      .getState()
+      .appendChatNote(
+        `✗ ${friendlyImageGenerationError('NO_READY_IMAGE_PROVIDER')}`,
+        'system',
+      );
+    return;
+  }
+  if (!imageProviderReady(providerId, settings)) {
+    useStore
+      .getState()
+      .appendChatNote(
+        `✗ ${friendlyImageGenerationError(`IMAGE_PROVIDER_NOT_READY:${providerId}`)}`,
+        'system',
+      );
+    return;
+  }
   // The coding/text model that authors the image prompt (step 1) is the channel
   // the composer currently has selected — image mode only swaps the image
   // provider selectors, not composer.model. Permission mirrors the composer so a
@@ -8613,7 +8711,9 @@ function startImageGenerationTurn(
       syncAndPersistSessionRunStatus(sessionKey, 'success');
     } catch (err) {
       if (!aiEditRegistered(ch)) return;
-      const msg = err instanceof Error ? err.message : String(err);
+      if (ch.abortController.signal.aborted) return;
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const msg = friendlyImageGenerationError(rawMsg);
       setAssistant(
         `${elapsed()} · 失败\n✗ 图片生成失败: ${msg}\n\n请在设置 > 生图中配置可用的图片 Provider，或切换到本地 ComfyUI。`,
         true,
@@ -10242,6 +10342,7 @@ function awaitInteraction(
     interactionStatus: 'pending',
   };
   if (aiCh) {
+    aiCh.ownedMessageIds?.add(id);
     aiCh.messages = [...aiCh.messages, msg];
     aiEditCommitMessages(aiCh, true);
   } else {
@@ -10261,6 +10362,7 @@ function awaitInteraction(
     // The turn is now parked on the user: flip the session to a static
     // "waiting" badge (no spinner) and let the composer accept the answer.
     syncWaitingInputSessions();
+    scheduleSessionWaitingInputNotification(sessionKey, req, id);
   });
 }
 

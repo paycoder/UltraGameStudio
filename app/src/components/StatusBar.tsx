@@ -16,6 +16,7 @@ import {
   subscribeUsageMeter,
 } from '@/lib/usageMeter';
 import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 function contextUsageTextColor(tone: ContextUsageTone): string {
   if (tone === 'danger') return 'text-[var(--status-error)]';
@@ -49,14 +50,17 @@ function isLocalHost(host: string): boolean {
   return /^(localhost|127\.0\.0\.1|\[?::1\]?)($|:)/i.test(host);
 }
 
-function displayHost(route: {
-  baseUrl?: string;
-  providerName?: string;
-  adapter?: string;
-}): string {
+function displayHost(
+  route: {
+    baseUrl?: string;
+    providerName?: string;
+    adapter?: string;
+  },
+  fallback: string,
+): string {
   const host = hostFromBaseUrl(route.baseUrl);
   if (host && !isLocalHost(host)) return host;
-  return route.providerName || route.adapter || '模型';
+  return route.providerName || route.adapter || fallback;
 }
 
 function useGatewayVersion(): number {
@@ -78,6 +82,7 @@ function useGatewayVersion(): number {
 }
 
 export default function StatusBar() {
+  const locale = useStore((state) => state.locale);
   const workflow = useStore((state) => state.workflow);
   const composerModel = useStore((state) => state.composer.model);
   const messages = useStore((state) => state.messages);
@@ -141,25 +146,34 @@ export default function StatusBar() {
     [messages, composerDraft, adapter, route.model, composerModel, simpleChatMode],
   );
 
-  const host = displayHost(route);
+  const host = displayHost(route, t(locale, 'statusBar.model'));
   const isConfigured = route.mode === 'cli' || Boolean(route.apiKey?.trim());
-  const statusLabel = isConfigured ? '在线' : '未配置';
-  const statusTone =
-    statusLabel === '在线'
-      ? 'text-[var(--status-success)]'
-      : 'text-fg-faint';
+  const statusLabel = isConfigured
+    ? t(locale, 'statusBar.online')
+    : t(locale, 'statusBar.notConfigured');
+  const statusTone = isConfigured
+    ? 'text-[var(--status-success)]'
+    : 'text-fg-faint';
   const cachePercent = sessionCachePercent(usage);
-  const contextUsageTitle = `上下文用量（估算）：已使用 ${formatCompactTokenCount(
-    contextUsage.usedTokens,
-  )} / ${formatCompactTokenCount(contextUsage.limitTokens)} tokens`;
+  const contextUsageTitle =
+    locale === 'zh-CN'
+      ? `上下文用量（估算）：已使用 ${formatCompactTokenCount(
+          contextUsage.usedTokens,
+        )} / ${formatCompactTokenCount(contextUsage.limitTokens)} tokens`
+      : `Context usage (estimate): ${formatCompactTokenCount(
+          contextUsage.usedTokens,
+        )} / ${formatCompactTokenCount(contextUsage.limitTokens)} tokens used`;
 
   return (
     <footer className="flex h-7 shrink-0 items-center overflow-x-auto border-t border-border bg-panel px-3 text-[11px] leading-none text-fg-dim">
       <div className="flex min-w-max items-center gap-4">
-        <span className="inline-flex items-center gap-1.5" title="当前模型通道状态">
+        <span
+          className="inline-flex items-center gap-1.5"
+          title={t(locale, 'statusBar.channelStatusTitle')}
+        >
           <span
             className={`h-2 w-2 rounded-full ${
-              statusLabel === '在线'
+              isConfigured
                 ? 'bg-[var(--status-success)]'
                 : 'bg-fg-faint'
             }`}
@@ -170,17 +184,20 @@ export default function StatusBar() {
           className="inline-flex items-center gap-1.5"
           title={
             cachePercent === null
-              ? '本会话尚未拿到服务端缓存用量'
-              : '本会话累计缓存命中占比'
+              ? t(locale, 'statusBar.cacheNoData')
+              : t(locale, 'statusBar.cacheHitRatio')
           }
         >
           <Zap size={12} className="text-[var(--accent-3)]" />
-          <span>缓存</span>
+          <span>{t(locale, 'statusBar.cache')}</span>
           <span className="font-medium text-[var(--accent-4)]">
             {formatCachePercent(cachePercent)}
           </span>
         </span>
-        <span className="inline-flex items-center gap-1.5" title="当前会话累计 token 用量">
+        <span
+          className="inline-flex items-center gap-1.5"
+          title={t(locale, 'statusBar.tokensTitle')}
+        >
           <Hash size={12} className="text-fg-faint" />
           <span>tokens</span>
           <span className="font-medium text-fg">
@@ -196,7 +213,7 @@ export default function StatusBar() {
             size={12}
             className={contextUsageTextColor(contextUsage.tone)}
           />
-          <span>上下文</span>
+          <span>{t(locale, 'statusBar.context')}</span>
           <span
             className={`font-medium tabular-nums ${contextUsageTextColor(
               contextUsage.tone,
@@ -205,7 +222,10 @@ export default function StatusBar() {
             {contextUsage.displayPercent}
           </span>
         </span>
-        <span className="inline-flex items-center gap-1.5 text-fg-faint" title="本地累计调用次数">
+        <span
+          className="inline-flex items-center gap-1.5 text-fg-faint"
+          title={t(locale, 'statusBar.callsTitle')}
+        >
           <Database size={12} />
           <span>{usage.totals.calls}</span>
         </span>

@@ -11,6 +11,8 @@ import {
 import { Boxes, Maximize2, Play, AlertTriangle } from 'lucide-react';
 import CopyButton from './CopyButton';
 import RawCodeBlock from './RawCodeBlock';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 import {
   comfyToFlow,
   comfyGraphStats,
@@ -71,6 +73,7 @@ export interface ComfyGraphBlockProps {
 }
 
 export default function ComfyGraphBlock({ code, onEdit }: ComfyGraphBlockProps) {
+  const locale = useStore((s) => s.locale);
   const graph = useMemo(() => parseComfyGraph(code), [code]);
   const [expanded, setExpanded] = useState(false);
 
@@ -80,9 +83,9 @@ export default function ComfyGraphBlock({ code, onEdit }: ComfyGraphBlockProps) 
         <div className="flex items-center justify-between gap-2 border-b border-[var(--code-border)] bg-[var(--code-header-bg)] px-3 py-1.5">
           <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-fg-faint">
             <AlertTriangle size={13} className="shrink-0 text-danger" />
-            <span className="truncate">ComfyUI 图解析失败</span>
+            <span className="truncate">{t(locale, 'comfy.parseFailed')}</span>
           </span>
-          <CopyButton value={code} label="复制" className="px-1 py-0.5" />
+          <CopyButton value={code} label={t(locale, 'chat.copy')} className="px-1 py-0.5" />
         </div>
         <RawCodeBlock raw={code} language="json" compact className="border-x-0 border-b-0" />
       </div>
@@ -115,6 +118,7 @@ function ComfyMiniPreview({
   graph: ComfyPromptGraph;
   onExpand: () => void;
 }) {
+  const locale = useStore((s) => s.locale);
   const { nodes, edges } = useMemo(() => comfyToFlow(graph), [graph]);
   const stats = useMemo(() => comfyGraphStats(graph), [graph]);
   return (
@@ -123,7 +127,7 @@ function ComfyMiniPreview({
         <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-fg-faint">
           <Boxes size={13} className="shrink-0 text-accent" />
           <span className="truncate">
-            ComfyUI · {stats.nodes} 节点 · {stats.edges} 连线
+            ComfyUI · {stats.nodes} {t(locale, 'comfy.nodes')} · {stats.edges} {t(locale, 'comfy.edges')}
           </span>
         </span>
         <button
@@ -132,10 +136,10 @@ function ComfyMiniPreview({
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-fg-faint hover:bg-[var(--code-border)] hover:text-fg"
         >
           <Maximize2 size={12} />
-          展开
+          {t(locale, 'chat.expand')}
         </button>
       </div>
-      <div className="ai-comfy__mini h-44" aria-label="ComfyUI 节点图预览">
+      <div className="ai-comfy__mini h-44" aria-label={t(locale, 'comfy.preview')}>
         <ReactFlowProvider>
           <ReactFlow
             nodes={nodes}
@@ -182,6 +186,7 @@ function ComfyEditorOverlay({
   const [draft, setDraft] = useState<ComfyPromptGraph>(() =>
     structuredClone(graph),
   );
+  const locale = useStore((s) => s.locale);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
@@ -231,7 +236,7 @@ function ComfyEditorOverlay({
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <span className="flex items-center gap-1.5 text-sm font-medium text-fg">
           <Boxes size={15} className="text-accent" />
-          ComfyUI 节点编辑器
+          {t(locale, 'comfy.nodeEditor')}
         </span>
         <div className="flex items-center gap-1.5">
           <button
@@ -241,7 +246,7 @@ function ComfyEditorOverlay({
             className="flex items-center gap-1 rounded bg-accent px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50"
           >
             <Play size={12} />
-            {running ? '运行中…' : '运行'}
+            {running ? t(locale, 'comfy.running') : t(locale, 'comfy.run')}
           </button>
           {editable && (
             <button
@@ -249,7 +254,7 @@ function ComfyEditorOverlay({
               onClick={() => onSave(JSON.stringify(draft, null, 2))}
               className="rounded border border-border px-2.5 py-1 text-xs text-fg-faint hover:text-fg"
             >
-              保存并返回
+              {t(locale, 'comfy.saveAndReturn')}
             </button>
           )}
           <button
@@ -257,7 +262,7 @@ function ComfyEditorOverlay({
             onClick={onClose}
             className="rounded border border-border px-2.5 py-1 text-xs text-fg-faint hover:text-fg"
           >
-            返回
+            {t(locale, 'comfy.back')}
           </button>
         </div>
       </div>
@@ -314,7 +319,7 @@ function ComfyEditorOverlay({
               )}
             </div>
           ) : (
-            <div className="text-fg-dim">点击节点查看并编辑参数</div>
+            <div className="text-fg-dim">{t(locale, 'comfy.clickNodeToEdit')}</div>
           )}
 
           {runError && (
@@ -324,7 +329,7 @@ function ComfyEditorOverlay({
           )}
           {images.length > 0 && (
             <div className="mt-3 space-y-2">
-              <div className="text-fg-faint">生成结果</div>
+              <div className="text-fg-faint">{t(locale, 'comfy.result')}</div>
               {images.map((img) => (
                 <img
                   key={img.url}

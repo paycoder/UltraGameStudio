@@ -24,7 +24,9 @@ function scanForEngine(
             ? 'Unreal Engine'
             : engine === 'godot'
               ? 'Godot'
-              : '未识别',
+              : engine === 'cocos'
+                ? 'Cocos'
+                : '未识别',
       confidence: engine === 'unknown' ? 0 : 0.95,
       markers: [],
     },
@@ -34,6 +36,7 @@ function scanForEngine(
 describe('project settings game features', () => {
   it('keeps game-related features off by default', () => {
     expect(emptyProjectSettings().gameFeatures).toEqual({
+      isGameProject: false,
       meshGeneration: false,
       rigging: false,
       gameExperts: false,
@@ -68,10 +71,32 @@ describe('project settings game features', () => {
 
     expect(settings.engine).toBe('unity');
     expect(settings.gameFeatures).toEqual({
+      isGameProject: true,
       meshGeneration: true,
       rigging: true,
       gameExperts: true,
       gameExpertEngine: 'unity',
+    });
+    expect(settings.uiDesign).toEqual({
+      enabled: true,
+      mode: 'commercial',
+      defaultChannelId: 'figma',
+    });
+  });
+
+  it('turns on game project tabs for detected Cocos projects', () => {
+    const settings = settingsWithDetectedGameFeatures(
+      emptyProjectSettings(),
+      scanForEngine('cocos'),
+    );
+
+    expect(settings.engine).toBe('cocos');
+    expect(settings.gameFeatures).toEqual({
+      isGameProject: true,
+      meshGeneration: true,
+      rigging: true,
+      gameExperts: true,
+      gameExpertEngine: 'auto',
     });
     expect(settings.uiDesign).toEqual({
       enabled: true,
@@ -104,6 +129,7 @@ describe('project settings game features', () => {
         autoDetect: false,
       },
       gameFeatures: {
+        isGameProject: true,
         meshGeneration: true,
         rigging: false,
         gameExperts: true,
@@ -123,6 +149,7 @@ describe('project settings game features', () => {
     const settings = projectSettingsFromMetadata({
       projectSettings: {
         gameFeatures: {
+          isGameProject: true,
           meshGeneration: true,
           rigging: true,
           gameExperts: true,
@@ -132,9 +159,32 @@ describe('project settings game features', () => {
     });
 
     expect(settings.gameFeatures).toEqual({
+      isGameProject: true,
       meshGeneration: true,
       rigging: true,
       gameExperts: true,
+      gameExpertEngine: 'unreal',
+    });
+  });
+
+  it('keeps an explicitly disabled game project switch off', () => {
+    const settings = projectSettingsFromMetadata({
+      projectSettings: {
+        gameFeatures: {
+          isGameProject: false,
+          meshGeneration: true,
+          rigging: true,
+          gameExperts: true,
+          gameExpertEngine: 'unreal',
+        },
+      },
+    });
+
+    expect(settings.gameFeatures).toEqual({
+      isGameProject: false,
+      meshGeneration: false,
+      rigging: false,
+      gameExperts: false,
       gameExpertEngine: 'unreal',
     });
   });
@@ -325,6 +375,7 @@ describe('project settings game features', () => {
           command: 'C:\\tools\\ue-mcp-for-all-versions.exe',
           args: [],
           env: {},
+          url: null,
           available: true,
           availabilityNote: 'ok',
           requiresUserApproval: true,
@@ -337,6 +388,139 @@ describe('project settings game features', () => {
     expect(next.mcp.servers.map((server) => [server.id, server.enabled])).toEqual([
       [PREFERRED_UNREAL_MCP_SERVER_ID, true],
       ['unreal', false],
+    ]);
+  });
+
+  it('adds the Unity MCP recommendation for Unity projects', () => {
+    const scan: ProjectEnvironmentScan = {
+      rootPath: 'E:\\Game',
+      scannedAtMs: 1,
+      skillRoots: [],
+      engine: scanForEngine('unity').engine,
+      suggestedMcpServers: [
+        {
+          id: 'unity-mcp',
+          label: 'Unity MCP',
+          description: 'MCP for Unity',
+          transport: 'stdio',
+          command: 'uvx',
+          args: ['--from', 'mcpforunityserver', 'mcp-for-unity', '--transport', 'stdio'],
+          env: {},
+          url: null,
+          available: true,
+          availabilityNote: 'ok',
+          requiresUserApproval: true,
+        },
+        {
+          id: PREFERRED_UNREAL_MCP_SERVER_ID,
+          label: 'Unreal MCP (全版本)',
+          description: '版本无关的 Unreal RemoteControl MCP',
+          transport: 'stdio',
+          command: 'ue-mcp-for-all-versions',
+          args: [],
+          env: {},
+          url: null,
+          available: false,
+          availabilityNote: 'missing',
+          requiresUserApproval: true,
+        },
+        {
+          id: 'godot-mcp',
+          label: 'Godot MCP',
+          description: 'wellingfeng Godot MCP',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@coding-solo/godot-mcp'],
+          env: { GODOT_PATH: '' },
+          url: null,
+          available: true,
+          availabilityNote: 'ok',
+          requiresUserApproval: true,
+        },
+        {
+          id: 'cocos-mcp-server',
+          label: 'Cocos MCP',
+          description: 'wellingfeng Cocos MCP',
+          transport: 'streamable-http',
+          command: 'npx',
+          args: ['-y', 'mcp-remote', 'http://localhost:3000/mcp'],
+          env: {},
+          url: 'http://localhost:3000/mcp',
+          available: true,
+          availabilityNote: 'ok',
+          requiresUserApproval: true,
+        },
+      ],
+    };
+
+    const next = mergeRecommendedMcpServers(emptyProjectSettings(), scan);
+
+    expect(next.engine).toBe('unity');
+    expect(next.mcp.enabled).toBe(true);
+    expect(next.mcp.servers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'unity-mcp',
+          command: 'uvx',
+          args: ['--from', 'mcpforunityserver', 'mcp-for-unity', '--transport', 'stdio'],
+          enabled: true,
+          requiresUserApproval: true,
+        }),
+        expect.objectContaining({
+          id: PREFERRED_UNREAL_MCP_SERVER_ID,
+          enabled: true,
+          requiresUserApproval: true,
+        }),
+        expect.objectContaining({
+          id: 'godot-mcp',
+          command: 'npx',
+          args: ['-y', '@coding-solo/godot-mcp'],
+          env: { GODOT_PATH: '' },
+        }),
+        expect.objectContaining({
+          id: 'cocos-mcp-server',
+          transport: 'streamable-http',
+          url: 'http://localhost:3000/mcp',
+        }),
+      ]),
+    );
+  });
+
+  it('adds the wellingfeng Godot MCP recommendation for Godot projects', () => {
+    const scan: ProjectEnvironmentScan = {
+      rootPath: 'E:\\Game',
+      scannedAtMs: 1,
+      skillRoots: [],
+      engine: scanForEngine('godot').engine,
+      suggestedMcpServers: [
+        {
+          id: 'godot-mcp',
+          label: 'Godot MCP',
+          description: 'wellingfeng Godot MCP',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@coding-solo/godot-mcp'],
+          env: {},
+          url: null,
+          available: true,
+          availabilityNote: 'ok',
+          requiresUserApproval: true,
+        },
+      ],
+    };
+
+    const next = mergeRecommendedMcpServers(emptyProjectSettings(), scan);
+
+    expect(next.engine).toBe('godot');
+    expect(next.mcp.enabled).toBe(true);
+    expect(next.mcp.servers).toEqual([
+      expect.objectContaining({
+        id: 'godot-mcp',
+        command: 'npx',
+        args: ['-y', '@coding-solo/godot-mcp'],
+        enabled: true,
+        requiresUserApproval: true,
+      }),
     ]);
   });
 });

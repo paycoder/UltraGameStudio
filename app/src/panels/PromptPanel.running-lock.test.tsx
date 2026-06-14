@@ -586,7 +586,7 @@ describe('PromptPanel running lock', () => {
   it('reruns a favorited chat from its first user message', async () => {
     resetStoreForPromptLock('design');
     const originalSendPrompt = useStore.getState().sendPrompt;
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({
       workflow: simpleBlueprint('Reusable chat'),
       composerDraft: '',
@@ -620,6 +620,34 @@ describe('PromptPanel running lock', () => {
 
       expect(sendPrompt).toHaveBeenCalledWith('repeat this task');
       expect(useStore.getState().composerDraft).toBe('');
+    } finally {
+      await view.cleanup();
+      useStore.setState({ sendPrompt: originalSendPrompt });
+    }
+  });
+
+  it('keeps the draft when the store rejects a chat send', async () => {
+    resetStoreForPromptLock('design', 'next question');
+    const originalSendPrompt = useStore.getState().sendPrompt;
+    const sendPrompt = vi.fn(() => false);
+    useStore.setState({
+      workflow: simpleBlueprint('Simple chat'),
+      sendPrompt,
+      blockedSendTip: 'model-switched-while-chatting',
+    });
+    const view = await renderChatDock();
+
+    try {
+      const runButton = buttonByAriaLabel(view.container, '运行当前会话输入');
+
+      await act(async () => {
+        runButton.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(sendPrompt).toHaveBeenCalledWith('next question');
+      expect(useStore.getState().composerDraft).toBe('next question');
+      expect(aiInput(view.container).value).toBe('next question');
     } finally {
       await view.cleanup();
       useStore.setState({ sendPrompt: originalSendPrompt });
@@ -861,7 +889,7 @@ describe('PromptPanel running lock', () => {
     const originalSendPrompt = useStore.getState().sendPrompt;
     const originalBranchSessionFromMessage =
       useStore.getState().branchSessionFromMessage;
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     const branchSessionFromMessage = vi.fn();
     useStore.setState({
       workflow: simpleBlueprint('Plain chat'),

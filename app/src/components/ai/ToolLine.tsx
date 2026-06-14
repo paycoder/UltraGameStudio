@@ -5,6 +5,8 @@ import ToolIcon from './ToolIcon';
 import CopyButton from './CopyButton';
 import FileChip, { type OpenFileFn } from './FileChip';
 import { compactToolSubject, toolSubjectAllowsFileRefs } from './lib/toolDisplay';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 /**
  * Renders a runtime tool-call progress line (e.g. `🔧 command_execution: rg …`)
@@ -28,6 +30,7 @@ export default function ToolLine({
   cwd?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const locale = useStore((s) => s.locale);
   const collapsedDetail = compactToolSubject(name, detail);
   const rawOneLine = detail.replace(/[\r\n]+/g, ' ').trim();
   const expandable =
@@ -58,7 +61,7 @@ export default function ToolLine({
             type="button"
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
-            aria-label={open ? '收起' : '展开'}
+            aria-label={open ? t(locale, 'chat.collapse') : t(locale, 'chat.expand')}
             className="-ml-0.5 flex shrink-0 items-center text-fg-faint transition-colors hover:text-fg"
           >
             <ChevronRight

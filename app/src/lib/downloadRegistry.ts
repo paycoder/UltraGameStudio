@@ -116,6 +116,14 @@ export interface DownloadEntry {
 const STORAGE_KEY = 'freeultracode.assets.v1';
 const LEGACY_STORAGE_KEY = 'freeultracode.downloads.v1';
 const MAX_PERSISTED = 200;
+/**
+ * Largest inline `data:` preview we are willing to write to localStorage.
+ * Generated media (a 1024px PNG is ~1–2MB as base64) would otherwise blow the
+ * ~5MB quota after only a few assets, making the whole history fail to persist.
+ * Disk-backed assets can rebuild their preview from `localPath`, so the inline
+ * copy is dropped on persist; only small thumbnails / remote URLs are kept.
+ */
+const MAX_INLINE_PREVIEW_CHARS = 64 * 1024;
 
 let entries: AssetEntry[] = [];
 let hydrated = false;
@@ -208,6 +216,22 @@ function legacyToAsset(legacy: DownloadEntry): AssetEntry {
   };
 }
 
+/**
+ * Strip an entry's inline `data:` preview when it is too large to persist and a
+ * disk-backed copy exists to rebuild it from. Remote (`http(s)`) previews and
+ * small inline thumbnails are kept verbatim. Returns the entry unchanged when
+ * nothing needs trimming so identity is preserved for the common case.
+ */
+function trimForPersist(entry: AssetEntry): AssetEntry {
+  const preview = entry.previewUrl;
+  if (!preview || !preview.startsWith('data:')) return entry;
+  if (preview.length <= MAX_INLINE_PREVIEW_CHARS) return entry;
+  // Too big to store inline. Drop it: it can be lazily rebuilt from localPath
+  // (desktop) on next load. Without a localPath there is nothing to rebuild
+  // from, but persisting a multi-MB string would break the whole history.
+  return { ...entry, previewUrl: undefined };
+}
+
 function persist(): void {
   if (!hasStorage()) return;
   try {
@@ -215,7 +239,8 @@ function persist(): void {
     // task cannot survive a page refresh.
     const terminal = entries
       .filter((entry) => entry.status !== 'pending')
-      .slice(0, MAX_PERSISTED);
+      .slice(0, MAX_PERSISTED)
+      .map(trimForPersist);
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(terminal));
   } catch {
     /* storage full / unavailable — history is best-effort */

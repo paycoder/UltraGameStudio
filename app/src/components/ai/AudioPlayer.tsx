@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { FastForward, Pause, Play, SkipForward } from 'lucide-react';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 export default function AudioPlayer({
   src,
@@ -8,6 +10,7 @@ export default function AudioPlayer({
   src: string;
   label?: string;
 }) {
+  const locale = useStore((s) => s.locale);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -59,7 +62,7 @@ export default function AudioPlayer({
   return (
     <span className="ai-audio-player my-2 flex w-full max-w-xl flex-col gap-2 rounded-md border border-border bg-bg-alt p-2">
       <span className="text-xs font-medium text-fg-dim">
-        {label || '音频'}
+        {label || t(locale, 'media.audio')}
       </span>
       <audio
         ref={audioRef}
@@ -75,8 +78,8 @@ export default function AudioPlayer({
         <button
           type="button"
           onClick={togglePlay}
-          title={playing ? '暂停' : '播放'}
-          aria-label={playing ? '暂停' : '播放'}
+          title={playing ? t(locale, 'media.pause') : t(locale, 'media.play')}
+          aria-label={playing ? t(locale, 'media.pause') : t(locale, 'media.play')}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
         >
           {playing ? <Pause size={15} /> : <Play size={15} />}
@@ -84,8 +87,8 @@ export default function AudioPlayer({
         <button
           type="button"
           onClick={fastForward}
-          title="快进 10 秒"
-          aria-label="快进 10 秒"
+          title={t(locale, 'media.forward10')}
+          aria-label={t(locale, 'media.forward10')}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
         >
           <FastForward size={15} />
@@ -93,8 +96,8 @@ export default function AudioPlayer({
         <button
           type="button"
           onClick={endPlayback}
-          title="结束"
-          aria-label="结束"
+          title={t(locale, 'media.end')}
+          aria-label={t(locale, 'media.end')}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
         >
           <SkipForward size={15} />
@@ -107,7 +110,7 @@ export default function AudioPlayer({
             step="0.1"
             value={Math.min(currentTime, duration || currentTime)}
             onChange={(event) => seekTo(Number(event.currentTarget.value))}
-            aria-label="播放进度"
+            aria-label={t(locale, 'media.playbackProgress')}
             className="ai-audio-player__range w-full"
           />
         </span>

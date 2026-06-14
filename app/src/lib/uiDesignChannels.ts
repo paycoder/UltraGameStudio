@@ -205,7 +205,11 @@ export function defaultUiDesignChannelIdForCategory(
 
 export function uiDesignChannelCategoryLabel(
   category: UiDesignChannelCategory,
+  locale?: string,
 ): string {
+  if (locale && locale !== 'zh-CN') {
+    return category === 'free-open' ? 'Free / open source' : 'Commercial';
+  }
   return category === 'free-open' ? '免费开源' : '商用';
 }
 

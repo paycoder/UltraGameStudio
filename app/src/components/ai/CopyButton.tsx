@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 /**
  * Copy-to-clipboard button used by code blocks (and reusable elsewhere). Swaps
@@ -9,16 +11,19 @@ import { Check, Copy } from 'lucide-react';
 export default function CopyButton({
   value,
   className,
-  title = '复制',
+  title,
   label,
 }: {
   value: string;
   className?: string;
   title?: string;
-  /** Optional text shown next to the icon (e.g. "复制"). Icon-only when omitted. */
+  /** Optional text shown next to the icon. Icon-only when omitted. */
   label?: string;
 }) {
+  const locale = useStore((s) => s.locale);
   const [copied, setCopied] = useState(false);
+  const resolvedTitle = title ?? t(locale, 'chat.copy');
+  const copiedLabel = t(locale, 'chat.copied');
 
   const onCopy = useCallback(async () => {
     try {
@@ -48,8 +53,8 @@ export default function CopyButton({
     <button
       type="button"
       onClick={onCopy}
-      title={copied ? '已复制' : title}
-      aria-label={copied ? '已复制' : title}
+      title={copied ? copiedLabel : resolvedTitle}
+      aria-label={copied ? copiedLabel : resolvedTitle}
       className={
         'inline-flex items-center gap-1 rounded text-fg-faint transition-colors hover:text-fg ' +
         (className ?? '')
@@ -61,7 +66,7 @@ export default function CopyButton({
         <Copy size={13} />
       )}
       {label != null && (
-        <span className="text-[11px]">{copied ? '已复制' : label}</span>
+        <span className="text-[11px]">{copied ? copiedLabel : label}</span>
       )}
     </button>
   );

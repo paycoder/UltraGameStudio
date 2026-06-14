@@ -33,6 +33,30 @@ export const MCP_CATEGORY_LABELS: Record<McpServerCategory, string> = {
   ai: 'AI / 模型',
 };
 
+const MCP_CATEGORY_LABELS_EN: Record<McpServerCategory, string> = {
+  filesystem: 'File system',
+  vcs: 'Version control',
+  web: 'Web scraping',
+  search: 'Search',
+  database: 'Database',
+  memory: 'Memory / knowledge',
+  automation: 'Browser automation',
+  productivity: 'Productivity',
+  communication: 'Communication',
+  cloud: 'Cloud services',
+  devtools: 'Dev tools',
+  game: 'Game / engine / graphics',
+  ai: 'AI / models',
+};
+
+export function mcpCategoryLabel(
+  category: McpServerCategory,
+  locale?: string,
+): string {
+  if (locale && locale !== 'zh-CN') return MCP_CATEGORY_LABELS_EN[category];
+  return MCP_CATEGORY_LABELS[category];
+}
+
 /** Optional prefetch command (npm -g / uv tool install) run before first use. */
 export interface McpInstallCommand {
   label: string;
@@ -608,11 +632,11 @@ export const MCP_CATALOG: McpServerDefinition[] = [
     description: '与 Unity 编辑器交互：管理资产、场景、脚本与组件，读取控制台日志并执行编辑器操作。',
     transport: 'stdio',
     command: 'uvx',
-    args: ['unity-mcp-server'],
+    args: ['--from', 'mcpforunityserver', 'mcp-for-unity', '--transport', 'stdio'],
     env: {},
-    install: '需要 uv / Python，并在 Unity 内安装 MCP for Unity 包（Package Manager）；首次连接需在编辑器中授权。',
-    sourceUrl: 'https://github.com/CoplayDev/unity-mcp',
-    tags: ['unity', 'csharp', 'editor', 'game', 'engine', 'community'],
+    install: '需要 uv / Python，并在 Unity 内安装 wellingfeng/unity-mcp 包；首次连接需在编辑器中授权。',
+    sourceUrl: 'https://github.com/wellingfeng/unity-mcp',
+    tags: ['unity', 'csharp', 'editor', 'game', 'engine', 'wellingfeng', 'community'],
     recommendationPriority: 78,
     trust: 'community',
     requiresUserApproval: true,
@@ -640,19 +664,31 @@ export const MCP_CATALOG: McpServerDefinition[] = [
     description: '驱动 Godot 引擎：运行项目、捕获调试输出、管理场景与脚本，辅助 GDScript 排错。',
     transport: 'stdio',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/godot-mcp'],
+    args: ['-y', '@coding-solo/godot-mcp'],
     env: { GODOT_PATH: '' },
-    requiredEnv: [
-      {
-        key: 'GODOT_PATH',
-        label: 'Godot 可执行文件路径',
-        placeholder: 'C:/Godot/Godot.exe 或 /usr/bin/godot',
-      },
-    ],
-    install: '需要本地安装 Godot 并指向其可执行文件；通过 npx 按需运行。',
-    sourceUrl: 'https://github.com/Coding-Solo/godot-mcp',
-    tags: ['godot', 'gdscript', 'editor', 'game', 'engine', 'community'],
+    install: '需要本地安装 Godot；自动发现失败时填写 GODOT_PATH。通过 npx 按需运行。',
+    sourceUrl: 'https://github.com/wellingfeng/godot-mcp',
+    tags: ['godot', 'gdscript', 'editor', 'game', 'engine', 'wellingfeng', 'community'],
     recommendationPriority: 72,
+    trust: 'community',
+    requiresUserApproval: true,
+  },
+  {
+    id: 'cocos-mcp-server',
+    title: 'Cocos MCP',
+    category: 'game',
+    description: '连接 Cocos Creator 扩展服务，读取和操作场景、节点、资源与编辑器状态。',
+    transport: 'streamable-http',
+    command: '',
+    args: [],
+    env: {},
+    url: 'http://localhost:3000/mcp',
+    install:
+      '需要将 wellingfeng/cocos-mcp-server 安装到项目 extensions/cocos-mcp-server，并在 Cocos Creator 中启用扩展。',
+    sourceUrl: 'https://github.com/wellingfeng/cocos-mcp-server',
+    connectionUrl: 'http://localhost:3000/mcp',
+    tags: ['cocos', 'cocos creator', 'editor', 'game', 'engine', 'wellingfeng', 'community'],
+    recommendationPriority: 71,
     trust: 'community',
     requiresUserApproval: true,
   },

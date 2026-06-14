@@ -54,6 +54,23 @@ struct SessionNotificationClickPayload {
     session_id: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionNotificationKind {
+    Success,
+    Error,
+    WaitingInput,
+}
+
+impl SessionNotificationKind {
+    fn from_arg(value: Option<String>) -> Self {
+        match value.as_deref() {
+            Some("error") => Self::Error,
+            Some("waitingInput") => Self::WaitingInput,
+            _ => Self::Success,
+        }
+    }
+}
+
 fn emit_session_notification_click<R: Runtime>(
     app: &AppHandle<R>,
     payload: SessionNotificationClickPayload,
@@ -74,12 +91,19 @@ fn notify_session_complete(
     body: String,
     workspace_id: Option<String>,
     session_id: Option<String>,
+    kind: Option<String>,
 ) -> Result<bool, String> {
     let payload = SessionNotificationClickPayload {
         workspace_id,
         session_id,
     };
-    show_session_completion_notification(app, title, body, payload)
+    show_session_completion_notification(
+        app,
+        title,
+        body,
+        payload,
+        SessionNotificationKind::from_arg(kind),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -107,14 +131,25 @@ fn show_session_completion_notification(
     title: String,
     body: String,
     payload: SessionNotificationClickPayload,
+    kind: SessionNotificationKind,
 ) -> Result<bool, String> {
-    use tauri_winrt_notification::{Duration, Toast};
+    use tauri_winrt_notification::{Duration, Scenario, Sound, Toast};
 
     let app_id = windows_notification_app_id(&app);
-    Toast::new(&app_id)
+    let mut toast = Toast::new(&app_id)
         .title(&title)
         .text2(&body)
-        .duration(Duration::Short)
+        .duration(if kind == SessionNotificationKind::WaitingInput {
+            Duration::Long
+        } else {
+            Duration::Short
+        });
+    if kind == SessionNotificationKind::WaitingInput {
+        toast = toast
+            .scenario(Scenario::Reminder)
+            .sound(Some(Sound::Reminder));
+    }
+    toast
         .on_activated(move |_| {
             emit_session_notification_click(&app, payload.clone());
             Ok(())
@@ -130,6 +165,7 @@ fn show_session_completion_notification(
     title: String,
     body: String,
     payload: SessionNotificationClickPayload,
+    _kind: SessionNotificationKind,
 ) -> Result<bool, String> {
     std::thread::spawn(move || {
         let bundle = if tauri::is_dev() {
@@ -160,6 +196,7 @@ fn show_session_completion_notification(
     _title: String,
     _body: String,
     _payload: SessionNotificationClickPayload,
+    _kind: SessionNotificationKind,
 ) -> Result<bool, String> {
     Ok(false)
 }
@@ -2899,6 +2936,7 @@ struct ProjectMcpServerSuggestion {
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
+    url: Option<String>,
     available: bool,
     availability_note: String,
     requires_user_approval: bool,
@@ -2988,6 +3026,59 @@ struct ProjectLspInstallResult {
     checked_at_ms: u64,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnityMcpSetupRequest {
+    root_path: String,
+    write_manifest: Option<bool>,
+    write_mcp_config: Option<bool>,
+    dry_run: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnityMcpSetupResult {
+    ok: bool,
+    changed: bool,
+    dry_run: bool,
+    package_id: String,
+    package_url: String,
+    configured_files: Vec<String>,
+    changed_files: Vec<String>,
+    notes: Vec<String>,
+    warnings: Vec<String>,
+    error: Option<String>,
+    server_command: String,
+    server_args: Vec<String>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenericProjectMcpSetupRequest {
+    root_path: String,
+    dry_run: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenericProjectMcpSetupResult {
+    ok: bool,
+    changed: bool,
+    dry_run: bool,
+    server_id: String,
+    label: String,
+    description: String,
+    transport: String,
+    server_command: Option<String>,
+    server_args: Vec<String>,
+    server_url: Option<String>,
+    configured_files: Vec<String>,
+    changed_files: Vec<String>,
+    notes: Vec<String>,
+    warnings: Vec<String>,
+    error: Option<String>,
+}
+
 fn project_path_display(path: &Path) -> String {
     display_preview_path(path)
 }
@@ -3068,6 +3159,11 @@ fn godot_project_format(root: &Path) -> Option<String> {
         .filter(|value| !value.ends_with(' '))
 }
 
+fn cocos_project_name(root: &Path) -> Option<String> {
+    project_json_string(&root.join("project.json"), "name")
+        .or_else(|| project_json_string(&root.join("settings/project.json"), "name"))
+}
+
 fn detect_project_engine(root: &Path) -> ProjectEngineDetection {
     if let Some(project_file) = project_first_root_file_with_ext(root, "uproject") {
         let mut markers = vec![project_relative_marker(root, &project_file)];
@@ -3114,6 +3210,34 @@ fn detect_project_engine(root: &Path) -> ProjectEngineDetection {
             project_file: Some(project_path_display(&godot_file)),
             version: godot_project_format(root),
             markers: vec!["project.godot".to_string()],
+        };
+    }
+
+    let cocos_project = root.join("project.json");
+    let cocos_settings_project = root.join("settings/project.json");
+    let cocos_assets = root.join("assets");
+    if (cocos_project.is_file() || cocos_settings_project.is_file()) && cocos_assets.is_dir() {
+        let mut markers = vec!["assets/".to_string()];
+        let project_file = if cocos_project.is_file() {
+            markers.push("project.json".to_string());
+            cocos_project
+        } else {
+            markers.push("settings/project.json".to_string());
+            cocos_settings_project
+        };
+        if root.join("settings").is_dir() && !markers.iter().any(|marker| marker == "settings/") {
+            markers.push("settings/".to_string());
+        }
+        if root.join("extensions").is_dir() {
+            markers.push("extensions/".to_string());
+        }
+        return ProjectEngineDetection {
+            engine: "cocos".to_string(),
+            label: "Cocos".to_string(),
+            confidence: 0.86,
+            project_file: Some(project_path_display(&project_file)),
+            version: cocos_project_name(root),
+            markers,
         };
     }
 
@@ -3176,88 +3300,100 @@ fn project_command_available(command: &str) -> (bool, String) {
 
 fn project_suggested_mcp_servers(engine: &str) -> Vec<ProjectMcpServerSuggestion> {
     let mut suggestions = Vec::new();
-    let mut push = |id: &str,
-                    label: &str,
-                    description: &str,
-                    command: &str,
-                    args: Vec<&str>,
-                    requires_user_approval: bool| {
-        let (available, availability_note) = project_command_available(command);
-        suggestions.push(ProjectMcpServerSuggestion {
-            id: id.to_string(),
-            label: label.to_string(),
-            description: description.to_string(),
-            transport: "stdio".to_string(),
-            command: command.to_string(),
-            args: args.into_iter().map(|value| value.to_string()).collect(),
-            env: HashMap::new(),
-            available,
-            availability_note,
-            requires_user_approval,
-        });
-    };
-
-    match engine {
-        "unity" => {
-            #[cfg(target_os = "windows")]
-            let unity_relay = "%USERPROFILE%\\.unity\\relay\\unity-mcp-relay.exe";
-            #[cfg(not(target_os = "windows"))]
-            let unity_relay = "~/.unity/relay/unity-mcp-relay";
-            push(
-                "unity-official",
-                "Unity 官方 MCP",
-                "Unity Assistant relay；首次连接通常需要在 Unity Editor 中授权。",
-                unity_relay,
-                vec!["--mcp"],
-                true,
-            );
-        }
-        "unreal" => {
-            // Converge with the one-click installer: same stable id, and point at
-            // the cached verified binary when it is already present so "apply
-            // recommended" + probe work without extra steps. Falls back to the
-            // server id label when not yet installed.
-            let cached = ue_mcp_expected_binary_path()
-                .filter(|path| path.is_file() && ue_mcp_binary_verified(path));
-            let command = cached
-                .as_ref()
-                .map(|path| display_preview_path(path))
-                .unwrap_or_else(|| UE_MCP_SERVER_ID.to_string());
-            let (available, availability_note) = if cached.is_some() {
-                (true, "已安装并校验的 UE MCP 二进制。".to_string())
-            } else {
-                (
-                    false,
-                    "尚未安装；在上方点击“一键配置 Unreal MCP”自动下载并配置。".to_string(),
-                )
-            };
-            suggestions.push(ProjectMcpServerSuggestion {
-                id: UE_MCP_SERVER_ID.to_string(),
-                label: "Unreal MCP (全版本)".to_string(),
-                description:
-                    "版本无关的 Unreal RemoteControl MCP，支持 UE 4.25–5.8；一键安装会自动启用 RemoteControl/Python 插件并写入工程配置。"
-                        .to_string(),
-                transport: "stdio".to_string(),
-                command,
-                args: Vec::new(),
-                env: HashMap::new(),
-                available,
-                availability_note,
-                requires_user_approval: true,
-            });
-        }
-        "godot" => {
-            push(
-                "godot-mcp",
-                "Godot MCP",
-                "第三方 Godot MCP；通过 npm 启动，工作区路径以 {workspace} 传入。",
-                "npx",
-                vec!["-y", "@coding-solo/godot-mcp", "--path", "{workspace}"],
-                true,
-            );
-        }
-        _ => {}
+    if !matches!(engine, "unity" | "unreal" | "godot" | "cocos") {
+        return suggestions;
     }
+
+    let (unity_available, unity_note) = project_command_available(UNITY_MCP_COMMAND);
+    suggestions.push(ProjectMcpServerSuggestion {
+        id: UNITY_MCP_SERVER_ID.to_string(),
+        label: "Unity MCP".to_string(),
+        description:
+            "wellingfeng/unity-mcp：连接 Unity Editor，管理场景、资产、脚本、组件与控制台；首次连接需在 Unity Editor 中授权。"
+                .to_string(),
+        transport: "stdio".to_string(),
+        command: UNITY_MCP_COMMAND.to_string(),
+        args: UNITY_MCP_ARGS.iter().map(|value| (*value).to_string()).collect(),
+        env: HashMap::new(),
+        url: None,
+        available: unity_available,
+        availability_note: unity_note,
+        requires_user_approval: true,
+    });
+
+    // Converge with the one-click installer: same stable id, and point at
+    // the cached verified binary when it is already present so "apply
+    // recommended" + probe work without extra steps. Falls back to the
+    // server id label when not yet installed.
+    let cached = ue_mcp_expected_binary_path()
+        .filter(|path| path.is_file() && ue_mcp_binary_verified(path));
+    let command = cached
+        .as_ref()
+        .map(|path| display_preview_path(path))
+        .unwrap_or_else(|| UE_MCP_SERVER_ID.to_string());
+    let (available, availability_note) = if cached.is_some() {
+        (true, "已安装并校验的 UE MCP 二进制。".to_string())
+    } else {
+        (
+            false,
+            "尚未安装；点击“一键安装并配置”自动下载并配置。".to_string(),
+        )
+    };
+    suggestions.push(ProjectMcpServerSuggestion {
+        id: UE_MCP_SERVER_ID.to_string(),
+        label: "Unreal MCP (全版本)".to_string(),
+        description:
+            "版本无关的 Unreal RemoteControl MCP，支持 UE 4.25–5.8；一键安装会自动启用 RemoteControl/Python 插件并写入工程配置。"
+                .to_string(),
+        transport: "stdio".to_string(),
+        command,
+        args: Vec::new(),
+        env: HashMap::new(),
+        url: None,
+        available,
+        availability_note,
+        requires_user_approval: true,
+    });
+
+    let (godot_available, godot_note) = project_command_available("npx");
+    let mut godot_env = HashMap::new();
+    godot_env.insert("GODOT_PATH".to_string(), "".to_string());
+    suggestions.push(ProjectMcpServerSuggestion {
+        id: "godot-mcp".to_string(),
+        label: "Godot MCP".to_string(),
+        description:
+            "wellingfeng/godot-mcp：通过 npm 启动，可启动 Godot Editor、运行项目、读取调试输出并管理场景/脚本。"
+                .to_string(),
+        transport: "stdio".to_string(),
+        command: "npx".to_string(),
+        args: vec!["-y".to_string(), "@coding-solo/godot-mcp".to_string()],
+        env: godot_env,
+        url: None,
+        available: godot_available,
+        availability_note: godot_note,
+        requires_user_approval: true,
+    });
+
+    let (cocos_available, cocos_note) = project_command_available("npx");
+    suggestions.push(ProjectMcpServerSuggestion {
+        id: "cocos-mcp-server".to_string(),
+        label: "Cocos MCP".to_string(),
+        description:
+            "wellingfeng/cocos-mcp-server：作为 Cocos Creator 扩展运行，暴露 streamable-http MCP 服务。"
+                .to_string(),
+        transport: "streamable-http".to_string(),
+        command: "npx".to_string(),
+        args: vec![
+            "-y".to_string(),
+            "mcp-remote".to_string(),
+            "http://localhost:3000/mcp".to_string(),
+        ],
+        env: HashMap::new(),
+        url: Some(COCOS_MCP_URL.to_string()),
+        available: cocos_available,
+        availability_note: cocos_note,
+        requires_user_approval: true,
+    });
     suggestions
 }
 
@@ -3575,6 +3711,54 @@ fn project_mcp_probe_blocking(
     let root = project_scan_root(&root_path)?;
     if server.transport == "stdio" {
         return Ok(project_mcp_probe_stdio(&root, &server));
+    }
+    if server.transport == "streamable-http" || server.transport == "http" {
+        let Some(url) = server
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(ProjectMcpProbeResult {
+                server_id: server.id,
+                ok: false,
+                status: "missing-url".to_string(),
+                message: "MCP URL 为空。".to_string(),
+                tools_count: None,
+                checked_at_ms: now_ms(),
+            });
+        };
+        let result = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(4))
+            .call();
+        return Ok(match result {
+            Ok(response) => ProjectMcpProbeResult {
+                server_id: server.id,
+                ok: true,
+                status: "reachable".to_string(),
+                message: format!("HTTP MCP 端点可访问：HTTP {}", response.status()),
+                tools_count: None,
+                checked_at_ms: now_ms(),
+            },
+            Err(ureq::Error::Status(code, _)) if code == 400 || code == 404 || code == 405 => {
+                ProjectMcpProbeResult {
+                    server_id: server.id,
+                    ok: true,
+                    status: "reachable".to_string(),
+                    message: format!("HTTP MCP 端点有响应：HTTP {code}"),
+                    tools_count: None,
+                    checked_at_ms: now_ms(),
+                }
+            }
+            Err(err) => ProjectMcpProbeResult {
+                server_id: server.id,
+                ok: false,
+                status: "http-unreachable".to_string(),
+                message: format!("HTTP MCP 端点不可访问：{err}"),
+                tools_count: None,
+                checked_at_ms: now_ms(),
+            },
+        });
     }
     Ok(ProjectMcpProbeResult {
         server_id: server.id,
@@ -3976,6 +4160,479 @@ async fn project_lsp_install(
     tauri::async_runtime::spawn_blocking(move || project_lsp_install_blocking(request))
         .await
         .map_err(|e| format!("LSP 安装任务失败: {e}"))?
+}
+
+// ===== Unity MCP one-click project setup =====
+//
+// MCP for Unity is a Unity package plus a small Python MCP server. The package
+// runs inside Unity Editor and performs the actual editor-side operations; this
+// app can safely do the project-side setup: add the package Git dependency,
+// register the MCP server in the project's MCP config, and probe it once Unity
+// has opened the project and authorized the connection.
+
+const UNITY_MCP_SERVER_ID: &str = "unity-mcp";
+const UNITY_MCP_PACKAGE_ID: &str = "com.coplaydev.unity-mcp";
+const UNITY_MCP_PACKAGE_URL: &str =
+    "https://github.com/wellingfeng/unity-mcp.git?path=/MCPForUnity#beta";
+const UNITY_MCP_COMMAND: &str = "uvx";
+const UNITY_MCP_ARGS: &[&str] = &[
+    "--from",
+    "mcpforunityserver",
+    "mcp-for-unity",
+    "--transport",
+    "stdio",
+];
+
+fn unity_mcp_server_args() -> Vec<String> {
+    UNITY_MCP_ARGS
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect()
+}
+
+fn unity_mcp_write_manifest_dependency(root: &Path) -> Result<Option<String>, String> {
+    let manifest_path = root.join("Packages/manifest.json");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("读取 Packages/manifest.json 失败：{e}"))?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("解析 Packages/manifest.json 失败：{e}"))?;
+    if !doc.is_object() {
+        return Err("Packages/manifest.json 顶层不是 JSON 对象。".to_string());
+    }
+    let before = doc.clone();
+    let dependencies = doc
+        .as_object_mut()
+        .unwrap()
+        .entry("dependencies")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !dependencies.is_object() {
+        return Err("Packages/manifest.json 中 dependencies 字段不是对象。".to_string());
+    }
+    dependencies.as_object_mut().unwrap().insert(
+        UNITY_MCP_PACKAGE_ID.to_string(),
+        serde_json::Value::String(UNITY_MCP_PACKAGE_URL.to_string()),
+    );
+
+    if doc == before {
+        return Ok(None);
+    }
+    let serialized = serde_json::to_string_pretty(&doc)
+        .map_err(|e| format!("序列化 Packages/manifest.json 失败：{e}"))?;
+    atomic_write(&manifest_path, serialized.as_bytes())
+        .map_err(|e| format!("写入 Packages/manifest.json 失败：{e}"))?;
+    Ok(Some(project_relative_marker(root, &manifest_path)))
+}
+
+fn unity_mcp_write_project_mcp_json(root: &Path) -> Result<Option<String>, String> {
+    let mcp_path = root.join(".mcp.json");
+    let mut doc: serde_json::Value = std::fs::read_to_string(&mcp_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let before = doc.clone();
+    let desired = serde_json::json!({
+        "command": UNITY_MCP_COMMAND,
+        "args": unity_mcp_server_args(),
+    });
+
+    let root_obj = doc.as_object_mut().unwrap();
+    let servers = root_obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !servers.is_object() {
+        *servers = serde_json::Value::Object(serde_json::Map::new());
+    }
+    servers
+        .as_object_mut()
+        .unwrap()
+        .insert(UNITY_MCP_SERVER_ID.to_string(), desired);
+
+    if doc == before {
+        return Ok(None);
+    }
+    let serialized =
+        serde_json::to_string_pretty(&doc).map_err(|e| format!("序列化 .mcp.json 失败：{e}"))?;
+    atomic_write(&mcp_path, serialized.as_bytes())
+        .map_err(|e| format!("写入 .mcp.json 失败：{e}"))?;
+    Ok(Some(project_relative_marker(root, &mcp_path)))
+}
+
+fn unity_mcp_setup_project_blocking(
+    req: UnityMcpSetupRequest,
+) -> Result<UnityMcpSetupResult, String> {
+    let root = project_scan_root(&req.root_path)?;
+    let engine = detect_project_engine(&root);
+    if engine.engine != "unity" {
+        return Ok(UnityMcpSetupResult {
+            ok: false,
+            changed: false,
+            dry_run: req.dry_run == Some(true),
+            package_id: UNITY_MCP_PACKAGE_ID.to_string(),
+            package_url: UNITY_MCP_PACKAGE_URL.to_string(),
+            configured_files: Vec::new(),
+            changed_files: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+            error: Some(
+                "未检测到 Unity 工程；需要 Packages/manifest.json 和 ProjectSettings/。"
+                    .to_string(),
+            ),
+            server_command: UNITY_MCP_COMMAND.to_string(),
+            server_args: unity_mcp_server_args(),
+        });
+    }
+
+    let dry_run = req.dry_run == Some(true);
+    let write_manifest = req.write_manifest != Some(false);
+    let write_mcp_config = req.write_mcp_config != Some(false);
+    let mut configured_files = Vec::new();
+    let mut changed_files = Vec::new();
+    let mut notes = Vec::new();
+    let mut warnings = Vec::new();
+
+    if dry_run {
+        if write_manifest {
+            configured_files.push("Packages/manifest.json".to_string());
+        }
+        if write_mcp_config {
+            configured_files.push(".mcp.json".to_string());
+        }
+        notes.push("演练模式：未写入任何文件。".to_string());
+    } else {
+        if write_manifest {
+            configured_files.push("Packages/manifest.json".to_string());
+            if let Some(file) = unity_mcp_write_manifest_dependency(&root)? {
+                changed_files.push(file);
+            }
+        }
+        if write_mcp_config {
+            configured_files.push(".mcp.json".to_string());
+            if let Some(file) = unity_mcp_write_project_mcp_json(&root)? {
+                changed_files.push(file);
+            }
+        }
+        notes.push(format!(
+            "已登记 Unity 包依赖 {UNITY_MCP_PACKAGE_ID}；Unity 下次打开工程时会解析 Git 包。"
+        ));
+        notes.push(
+            "在 Unity Editor 中打开 Window > MCP for Unity，确认服务已启用并完成授权。".to_string(),
+        );
+        warnings.push(
+            "首次运行需要本机可用 uv/uvx；如果探测失败，请先安装 uv 或把 uvx 加入 PATH。"
+                .to_string(),
+        );
+    }
+
+    Ok(UnityMcpSetupResult {
+        ok: true,
+        changed: !changed_files.is_empty(),
+        dry_run,
+        package_id: UNITY_MCP_PACKAGE_ID.to_string(),
+        package_url: UNITY_MCP_PACKAGE_URL.to_string(),
+        configured_files,
+        changed_files,
+        notes,
+        warnings,
+        error: None,
+        server_command: UNITY_MCP_COMMAND.to_string(),
+        server_args: unity_mcp_server_args(),
+    })
+}
+
+#[tauri::command]
+async fn unity_mcp_setup_project(
+    request: UnityMcpSetupRequest,
+) -> Result<UnityMcpSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || unity_mcp_setup_project_blocking(request))
+        .await
+        .map_err(|e| format!("Unity MCP 配置任务失败: {e}"))?
+}
+
+// ===== Godot / Cocos MCP one-click project setup =====
+
+const GODOT_MCP_SERVER_ID: &str = "godot-mcp";
+const GODOT_MCP_SOURCE_URL: &str = "https://github.com/wellingfeng/godot-mcp";
+const GODOT_MCP_COMMAND: &str = "npx";
+const GODOT_MCP_ARGS: &[&str] = &["-y", "@coding-solo/godot-mcp"];
+const COCOS_MCP_SERVER_ID: &str = "cocos-mcp-server";
+const COCOS_MCP_SOURCE_URL: &str = "https://github.com/wellingfeng/cocos-mcp-server";
+const COCOS_MCP_URL: &str = "http://localhost:3000/mcp";
+const COCOS_MCP_EXTENSION_DIR: &str = "extensions/cocos-mcp-server";
+
+fn project_mcp_write_project_mcp_json(
+    root: &Path,
+    server_id: &str,
+    desired: serde_json::Value,
+) -> Result<Option<String>, String> {
+    let mcp_path = root.join(".mcp.json");
+    let mut doc: serde_json::Value = std::fs::read_to_string(&mcp_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    let before = doc.clone();
+    let root_obj = doc.as_object_mut().unwrap();
+    let servers = root_obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !servers.is_object() {
+        *servers = serde_json::Value::Object(serde_json::Map::new());
+    }
+    servers
+        .as_object_mut()
+        .unwrap()
+        .insert(server_id.to_string(), desired);
+
+    if doc == before {
+        return Ok(None);
+    }
+    let serialized =
+        serde_json::to_string_pretty(&doc).map_err(|e| format!("序列化 .mcp.json 失败：{e}"))?;
+    atomic_write(&mcp_path, serialized.as_bytes())
+        .map_err(|e| format!("写入 .mcp.json 失败：{e}"))?;
+    Ok(Some(project_relative_marker(root, &mcp_path)))
+}
+
+fn git_command_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "git.exe"
+    } else {
+        "git"
+    }
+}
+
+fn project_run_git(args: &[&str], cwd: &Path) -> Result<String, String> {
+    let output = std::process::Command::new(git_command_name())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("启动 git 失败：{e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(format!("git {} 失败：{detail}", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn npm_command_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "npm.cmd"
+    } else {
+        "npm"
+    }
+}
+
+fn project_run_npm(args: &[&str], cwd: &Path) -> Result<String, String> {
+    let output = std::process::Command::new(npm_command_name())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("启动 npm 失败：{e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(format!("npm {} 失败：{detail}", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn project_directory_nonempty(path: &Path) -> bool {
+    path.is_dir()
+        && std::fs::read_dir(path)
+            .ok()
+            .and_then(|mut entries| entries.next())
+            .is_some()
+}
+
+fn godot_mcp_setup_project_blocking(
+    req: GenericProjectMcpSetupRequest,
+) -> Result<GenericProjectMcpSetupResult, String> {
+    let root = project_scan_root(&req.root_path)?;
+    let engine = detect_project_engine(&root);
+    if engine.engine != "godot" {
+        return Ok(GenericProjectMcpSetupResult {
+            ok: false,
+            changed: false,
+            dry_run: req.dry_run == Some(true),
+            server_id: GODOT_MCP_SERVER_ID.to_string(),
+            label: "Godot MCP".to_string(),
+            description: "wellingfeng/godot-mcp：通过 npm 启动 Godot Editor 并管理项目。"
+                .to_string(),
+            transport: "stdio".to_string(),
+            server_command: Some(GODOT_MCP_COMMAND.to_string()),
+            server_args: GODOT_MCP_ARGS.iter().map(|value| (*value).to_string()).collect(),
+            server_url: None,
+            configured_files: Vec::new(),
+            changed_files: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+            error: Some("未检测到 Godot 工程；需要 project.godot。".to_string()),
+        });
+    }
+
+    let dry_run = req.dry_run == Some(true);
+    let mut changed_files = Vec::new();
+    let configured_files = vec![".mcp.json".to_string()];
+    let mut notes = Vec::new();
+    let mut warnings = Vec::new();
+    if dry_run {
+        notes.push("演练模式：未写入任何文件。".to_string());
+    } else {
+        let desired = serde_json::json!({
+            "command": GODOT_MCP_COMMAND,
+            "args": GODOT_MCP_ARGS,
+            "env": {
+                "GODOT_PATH": ""
+            }
+        });
+        if let Some(file) = project_mcp_write_project_mcp_json(&root, GODOT_MCP_SERVER_ID, desired)? {
+            changed_files.push(file);
+        }
+        notes.push(format!("已写入 {GODOT_MCP_SOURCE_URL} 的 Godot MCP 项目配置。"));
+        warnings.push("需要本机可用 Node.js / npx；如果无法自动发现 Godot，请在 MCP 配置中填写 GODOT_PATH。".to_string());
+    }
+
+    Ok(GenericProjectMcpSetupResult {
+        ok: true,
+        changed: !changed_files.is_empty(),
+        dry_run,
+        server_id: GODOT_MCP_SERVER_ID.to_string(),
+        label: "Godot MCP".to_string(),
+        description: "wellingfeng/godot-mcp：通过 npm 启动 Godot Editor 并管理项目。"
+            .to_string(),
+        transport: "stdio".to_string(),
+        server_command: Some(GODOT_MCP_COMMAND.to_string()),
+        server_args: GODOT_MCP_ARGS.iter().map(|value| (*value).to_string()).collect(),
+        server_url: None,
+        configured_files,
+        changed_files,
+        notes,
+        warnings,
+        error: None,
+    })
+}
+
+fn cocos_mcp_setup_project_blocking(
+    req: GenericProjectMcpSetupRequest,
+) -> Result<GenericProjectMcpSetupResult, String> {
+    let root = project_scan_root(&req.root_path)?;
+    let engine = detect_project_engine(&root);
+    if engine.engine != "cocos" {
+        return Ok(GenericProjectMcpSetupResult {
+            ok: false,
+            changed: false,
+            dry_run: req.dry_run == Some(true),
+            server_id: COCOS_MCP_SERVER_ID.to_string(),
+            label: "Cocos MCP".to_string(),
+            description: "wellingfeng/cocos-mcp-server：Cocos Creator 扩展形式的 MCP 服务。"
+                .to_string(),
+            transport: "streamable-http".to_string(),
+            server_command: None,
+            server_args: Vec::new(),
+            server_url: Some(COCOS_MCP_URL.to_string()),
+            configured_files: Vec::new(),
+            changed_files: Vec::new(),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+            error: Some("未检测到 Cocos 工程；需要 project.json 或 settings/project.json，并包含 assets/。".to_string()),
+        });
+    }
+
+    let dry_run = req.dry_run == Some(true);
+    let extension_path = root.join(COCOS_MCP_EXTENSION_DIR);
+    let mut configured_files = vec![".mcp.json".to_string(), COCOS_MCP_EXTENSION_DIR.to_string()];
+    let mut changed_files = Vec::new();
+    let mut notes = Vec::new();
+    let mut warnings = Vec::new();
+    if dry_run {
+        notes.push("演练模式：未写入任何文件。".to_string());
+    } else {
+        std::fs::create_dir_all(root.join("extensions"))
+            .map_err(|e| format!("创建 extensions 目录失败：{e}"))?;
+        if project_directory_nonempty(&extension_path) {
+            notes.push("Cocos MCP 扩展目录已存在，跳过 clone。".to_string());
+        } else {
+            if extension_path.exists() {
+                std::fs::remove_dir_all(&extension_path)
+                    .map_err(|e| format!("清理空扩展目录失败：{e}"))?;
+            }
+            project_run_git(
+                &[
+                    "clone",
+                    "--depth",
+                    "1",
+                    COCOS_MCP_SOURCE_URL,
+                    COCOS_MCP_EXTENSION_DIR,
+                ],
+                &root,
+            )?;
+            changed_files.push(COCOS_MCP_EXTENSION_DIR.to_string());
+        }
+        if extension_path.join("package.json").is_file() {
+            project_run_npm(&["install"], &extension_path)?;
+            project_run_npm(&["run", "build"], &extension_path)?;
+            notes.push("已在扩展目录执行 npm install 和 npm run build。".to_string());
+        } else {
+            warnings.push("扩展目录中未找到 package.json，请确认插件是否完整。".to_string());
+        }
+        let desired = serde_json::json!({
+            "url": COCOS_MCP_URL,
+            "transport": "streamable-http"
+        });
+        if let Some(file) = project_mcp_write_project_mcp_json(&root, COCOS_MCP_SERVER_ID, desired)? {
+            changed_files.push(file);
+        }
+        notes.push("已配置 Cocos Creator 扩展和项目 .mcp.json。".to_string());
+        warnings.push("请在 Cocos Creator 中打开 Extension Manager 启用 cocos-mcp-server；扩展服务启动后再探测 MCP。".to_string());
+        warnings.push("如未安装 git，请从来源仓库手动下载到 extensions/cocos-mcp-server。".to_string());
+    }
+    configured_files.sort();
+    configured_files.dedup();
+
+    Ok(GenericProjectMcpSetupResult {
+        ok: true,
+        changed: !changed_files.is_empty(),
+        dry_run,
+        server_id: COCOS_MCP_SERVER_ID.to_string(),
+        label: "Cocos MCP".to_string(),
+        description: "wellingfeng/cocos-mcp-server：Cocos Creator 扩展形式的 MCP 服务。"
+            .to_string(),
+        transport: "streamable-http".to_string(),
+        server_command: None,
+        server_args: Vec::new(),
+        server_url: Some(COCOS_MCP_URL.to_string()),
+        configured_files,
+        changed_files,
+        notes,
+        warnings,
+        error: None,
+    })
+}
+
+#[tauri::command]
+async fn godot_mcp_setup_project(
+    request: GenericProjectMcpSetupRequest,
+) -> Result<GenericProjectMcpSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || godot_mcp_setup_project_blocking(request))
+        .await
+        .map_err(|e| format!("Godot MCP 配置任务失败: {e}"))?
+}
+
+#[tauri::command]
+async fn cocos_mcp_setup_project(
+    request: GenericProjectMcpSetupRequest,
+) -> Result<GenericProjectMcpSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cocos_mcp_setup_project_blocking(request))
+        .await
+        .map_err(|e| format!("Cocos MCP 配置任务失败: {e}"))?
 }
 
 // ===== Unreal Engine MCP one-click install + setup =====
@@ -10027,8 +10684,10 @@ fn project_mcp_server_key(id: &str, used: &mut HashSet<String>) -> String {
     key
 }
 
-fn project_mcp_settings_json(cwd: Option<&str>) -> Option<serde_json::Value> {
-    let settings = project_settings_for_cwd(cwd)?;
+fn project_mcp_settings_json_from_settings(
+    settings: &serde_json::Value,
+    cwd: Option<&str>,
+) -> Option<serde_json::Value> {
     if settings
         .pointer("/mcp/enabled")
         .and_then(|value| value.as_bool())
@@ -10044,45 +10703,66 @@ fn project_mcp_settings_json(cwd: Option<&str>) -> Option<serde_json::Value> {
         if server.get("enabled").and_then(|value| value.as_bool()) != Some(true) {
             continue;
         }
-        if server.get("transport").and_then(|value| value.as_str()) != Some("stdio") {
-            continue;
-        }
-        let Some(command) = server
-            .get("command")
+        let transport = server
+            .get("transport")
             .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
+            .unwrap_or("stdio")
+            .trim();
         let id = server
             .get("id")
             .and_then(|value| value.as_str())
             .unwrap_or("project-mcp");
         let mut entry = serde_json::Map::new();
-        entry.insert(
-            "command".to_string(),
-            serde_json::Value::String(project_expand_path_text(command)),
-        );
-        if let Some(args) = server.get("args").and_then(|value| value.as_array()) {
-            let args = args
-                .iter()
-                .filter_map(|value| value.as_str())
-                .map(|value| serde_json::Value::String(value.replace("{workspace}", workspace)))
-                .collect::<Vec<_>>();
-            entry.insert("args".to_string(), serde_json::Value::Array(args));
+        if transport == "stdio" {
+            let Some(command) = server
+                .get("command")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            entry.insert(
+                "command".to_string(),
+                serde_json::Value::String(project_expand_path_text(command)),
+            );
+            if let Some(args) = server.get("args").and_then(|value| value.as_array()) {
+                let args = args
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(|value| serde_json::Value::String(value.replace("{workspace}", workspace)))
+                    .collect::<Vec<_>>();
+                entry.insert("args".to_string(), serde_json::Value::Array(args));
+            }
+        } else {
+            let Some(url) = server
+                .get("url")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            entry.insert(
+                "url".to_string(),
+                serde_json::Value::String(url.replace("{workspace}", workspace)),
+            );
+            entry.insert(
+                "transport".to_string(),
+                serde_json::Value::String(transport.to_string()),
+            );
         }
         if let Some(env) = server.get("env").and_then(|value| value.as_object()) {
             let env = env
                 .iter()
                 .filter_map(|(key, value)| {
                     value.as_str().map(|value| {
-                        (
-                            key.clone(),
-                            serde_json::Value::String(value.replace("{workspace}", workspace)),
-                        )
+                        let value = value.replace("{workspace}", workspace);
+                        (key.clone(), value)
                     })
                 })
+                .filter(|(_key, value)| !value.trim().is_empty())
+                .map(|(key, value)| (key, serde_json::Value::String(value)))
                 .collect::<serde_json::Map<_, _>>();
             if !env.is_empty() {
                 entry.insert("env".to_string(), serde_json::Value::Object(env));
@@ -10102,6 +10782,11 @@ fn project_mcp_settings_json(cwd: Option<&str>) -> Option<serde_json::Value> {
         serde_json::Value::Object(mcp_servers),
     );
     Some(serde_json::Value::Object(root))
+}
+
+fn project_mcp_settings_json(cwd: Option<&str>) -> Option<serde_json::Value> {
+    let settings = project_settings_for_cwd(cwd)?;
+    project_mcp_settings_json_from_settings(&settings, cwd)
 }
 
 fn project_mcp_settings_prefers_unreal_mcp(settings: &serde_json::Value) -> bool {
@@ -12032,10 +12717,16 @@ mod tests {
     #[test]
     fn ue_mcp_suggestion_uses_stable_server_id() {
         let servers = project_suggested_mcp_servers("unreal");
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].id, UE_MCP_SERVER_ID);
-        assert_eq!(servers[0].transport, "stdio");
-        assert!(servers[0].requires_user_approval);
+        assert_eq!(servers.len(), 4);
+        let ue = servers.iter().find(|server| server.id == UE_MCP_SERVER_ID).unwrap();
+        assert_eq!(ue.transport, "stdio");
+        assert!(ue.requires_user_approval);
+        let cocos = servers
+            .iter()
+            .find(|server| server.id == COCOS_MCP_SERVER_ID)
+            .unwrap();
+        assert_eq!(cocos.transport, "streamable-http");
+        assert_eq!(cocos.url.as_deref(), Some(COCOS_MCP_URL));
     }
 
     #[test]
@@ -12050,6 +12741,39 @@ mod tests {
         });
 
         assert!(project_mcp_settings_prefers_unreal_mcp(&settings));
+    }
+
+    #[test]
+    fn project_mcp_settings_keeps_streamable_http_servers() {
+        let raw_settings = serde_json::json!({
+            "schemaVersion": 1,
+            "mcp": {
+                "enabled": true,
+                "servers": [
+                    {
+                        "id": "cocos-mcp-server",
+                        "label": "Cocos MCP",
+                        "enabled": true,
+                        "transport": "streamable-http",
+                        "url": "http://localhost:3000/mcp",
+                        "args": [],
+                        "env": {}
+                    }
+                ]
+            }
+        });
+
+        let settings = project_mcp_settings_json_from_settings(&raw_settings, Some("E:/Game"))
+            .unwrap();
+
+        assert_eq!(
+            settings["mcpServers"]["cocos-mcp-server"]["url"].as_str(),
+            Some("http://localhost:3000/mcp")
+        );
+        assert_eq!(
+            settings["mcpServers"]["cocos-mcp-server"]["transport"].as_str(),
+            Some("streamable-http")
+        );
     }
 
     #[test]
@@ -13100,6 +13824,9 @@ pub fn run() {
             project_mcp_probe,
             project_lsp_probe,
             project_lsp_install,
+            unity_mcp_setup_project,
+            godot_mcp_setup_project,
+            cocos_mcp_setup_project,
             ue_mcp_ensure_binary,
             ue_mcp_setup_project,
             workspace_changes_baseline,

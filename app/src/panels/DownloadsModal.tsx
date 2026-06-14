@@ -30,7 +30,7 @@ import {
   type AssetKind,
   type AssetSource,
 } from '@/lib/downloadRegistry';
-import { openExternal, openLocalPath } from '@/lib/tauri';
+import { openExternal, openLocalPath, previewLocalFile, tauriAvailable } from '@/lib/tauri';
 import VideoPlayer from '@/components/ai/VideoPlayer';
 
 /**
@@ -96,24 +96,6 @@ function matchesKindFilter(entry: AssetEntry, filter: KindFilter): boolean {
     return entry.kind === 'audio' || entry.kind === 'music' || entry.kind === 'speech';
   if (filter === 'mesh') return entry.kind === 'mesh' || entry.kind === 'model';
   return entry.kind === filter;
-}
-
-function isImagePreview(entry: AssetEntry): boolean {
-  return (
-    (entry.kind === 'image' || entry.kind === 'sprite') &&
-    Boolean(entry.previewUrl)
-  );
-}
-
-function isVideoPreview(entry: AssetEntry): boolean {
-  return entry.kind === 'video' && Boolean(entry.previewUrl);
-}
-
-function isAudioPreview(entry: AssetEntry): boolean {
-  return (
-    (entry.kind === 'audio' || entry.kind === 'music' || entry.kind === 'speech') &&
-    Boolean(entry.previewUrl)
-  );
 }
 
 function formatBytes(bytes: number | undefined): string | null {
@@ -194,10 +176,63 @@ function MetaTags({ entry, locale }: { entry: AssetEntry; locale: Locale }) {
   );
 }
 
+/**
+ * Resolve a displayable source for a media asset. Prefers the inline preview;
+ * when it is absent (e.g. a large generated image whose base64 was dropped on
+ * persist to keep the history under the localStorage quota) but a `localPath`
+ * exists, lazily read the file back through the desktop backend and cache the
+ * resulting data URL on the entry id. Returns null while loading / when there
+ * is nothing to show.
+ */
+function useResolvedPreview(entry: AssetEntry): string | null {
+  const [resolved, setResolved] = useState<string | null>(
+    entry.previewUrl ?? null,
+  );
+
+  useEffect(() => {
+    if (entry.previewUrl) {
+      setResolved(entry.previewUrl);
+      return;
+    }
+    // Only image/sprite previews are worth rebuilding inline; other kinds are
+    // opened on demand via the row actions instead.
+    const rebuildable =
+      (entry.kind === 'image' || entry.kind === 'sprite') &&
+      Boolean(entry.localPath) &&
+      tauriAvailable();
+    if (!rebuildable || !entry.localPath) {
+      setResolved(null);
+      return;
+    }
+    let cancelled = false;
+    setResolved(null);
+    void previewLocalFile(entry.localPath)
+      .then((preview) => {
+        if (cancelled) return;
+        if (preview.kind === 'image' && preview.base64) {
+          const mime = preview.mime ?? 'image/png';
+          setResolved(`data:${mime};base64,${preview.base64}`);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setResolved(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.previewUrl, entry.localPath, entry.kind]);
+
+  return resolved;
+}
+
 function AssetPreview({ entry }: { entry: AssetEntry }) {
-  const src = entry.previewUrl;
+  const src = useResolvedPreview(entry);
   if (!src) return null;
-  if (isImagePreview(entry)) {
+  const isImage = entry.kind === 'image' || entry.kind === 'sprite';
+  const isVideo = entry.kind === 'video';
+  const isAudio =
+    entry.kind === 'audio' || entry.kind === 'music' || entry.kind === 'speech';
+  if (isImage) {
     return (
       <img
         src={src}
@@ -207,14 +242,14 @@ function AssetPreview({ entry }: { entry: AssetEntry }) {
       />
     );
   }
-  if (isVideoPreview(entry)) {
+  if (isVideo) {
     return (
       <div className="mt-2">
         <VideoPlayer src={src} label={entry.title} />
       </div>
     );
   }
-  if (isAudioPreview(entry)) {
+  if (isAudio) {
     return (
       <audio
         src={src}

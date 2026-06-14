@@ -26,6 +26,11 @@ vi.mock('@/lib/tauri', async () => {
     skillInstallTargets: vi.fn(async () => []),
     tauriAvailable: vi.fn(() => false),
     scanProjectEnvironment: vi.fn(),
+    unityMcpSetupProject: vi.fn(),
+    godotMcpSetupProject: vi.fn(),
+    cocosMcpSetupProject: vi.fn(),
+    ueMcpEnsureBinary: vi.fn(),
+    ueMcpSetupProject: vi.fn(),
   };
 });
 
@@ -70,6 +75,51 @@ function unknownScan(): ProjectEnvironmentScan {
   };
 }
 
+function unityScan(): ProjectEnvironmentScan {
+  return {
+    rootPath: workspace.path,
+    scannedAtMs: 1,
+    engine: {
+      engine: 'unity',
+      label: 'Unity',
+      confidence: 0.94,
+      version: '2022.3.62f1',
+      markers: ['Packages/manifest.json', 'ProjectSettings/'],
+    },
+    skillRoots: [],
+    suggestedMcpServers: [
+      {
+        id: 'unity-mcp',
+        label: 'Unity MCP',
+        description: 'MCP for Unity',
+        transport: 'stdio',
+        command: 'uvx',
+        args: ['--from', 'mcpforunityserver', 'mcp-for-unity', '--transport', 'stdio'],
+        env: {},
+        url: null,
+        available: true,
+        availabilityNote: 'ok',
+        requiresUserApproval: true,
+      },
+    ],
+  };
+}
+
+function cocosScan(): ProjectEnvironmentScan {
+  return {
+    rootPath: workspace.path,
+    scannedAtMs: 1,
+    engine: {
+      engine: 'cocos',
+      label: 'Cocos',
+      confidence: 0.86,
+      markers: ['project.json', 'assets/'],
+    },
+    skillRoots: [],
+    suggestedMcpServers: [],
+  };
+}
+
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
     await act(async () => {
@@ -88,6 +138,7 @@ async function renderProjectSettingsModal(
   vi.mocked(tauriAvailable).mockReturnValue(false);
   vi.mocked(scanProjectEnvironment).mockResolvedValue(scan);
   useStore.setState({
+    locale: 'zh-CN',
     gameExpertSettings: DEFAULT_GAME_EXPERT_SETTINGS,
   });
 
@@ -450,6 +501,108 @@ describe('ProjectSettingsModal game project tabs', () => {
       ) as HTMLInputElement | null;
       expect(lspSwitch?.checked).toBe(false);
       expect(view.container.textContent).toMatch(/已启用\s*0/);
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it('shows game capability tabs for detected Cocos projects', async () => {
+    const view = await renderProjectSettingsModal(cocosScan());
+
+    try {
+      const tabText = Array.from(
+        view.container.querySelectorAll('nav [role="tab"]'),
+      ).map((tab) => tab.textContent?.trim());
+
+      expect(tabText).toContain('Mesh 渠道');
+      expect(tabText).toContain('UI 渠道');
+      expect(tabText).toContain('模型库');
+      expect(tabText).toContain('绑定渠道');
+      expect(tabText).toContain('游戏专家');
+      expect(tabText).toContain('命令');
+      expect(view.container.textContent).toContain('游戏项目：开启');
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it('lets users manually enable game capability tabs for unrecognized engines', async () => {
+    const view = await renderProjectSettingsModal(unknownScan());
+
+    try {
+      expect(
+        Array.from(view.container.querySelectorAll('nav [role="tab"]')).map((tab) =>
+          tab.textContent?.trim(),
+        ),
+      ).not.toContain('Mesh 渠道');
+
+      const gameProjectSwitch = Array.from(
+        view.container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      ).find((input) =>
+        input.closest('label')?.textContent?.includes('这是游戏项目'),
+      );
+      expect(gameProjectSwitch).toBeInstanceOf(HTMLInputElement);
+      await act(async () => {
+        gameProjectSwitch?.click();
+      });
+
+      const tabText = Array.from(
+        view.container.querySelectorAll('nav [role="tab"]'),
+      ).map((tab) => tab.textContent?.trim());
+
+      expect(tabText).toContain('Mesh 渠道');
+      expect(tabText).toContain('UI 渠道');
+      expect(tabText).toContain('模型库');
+      expect(tabText).toContain('绑定渠道');
+      expect(tabText).toContain('游戏专家');
+      expect(tabText).toContain('命令');
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it('shows one-click Unity MCP setup for Unity projects', async () => {
+    const view = await renderProjectSettingsModal(unityScan());
+
+    try {
+      const mcpTab = Array.from(
+        view.container.querySelectorAll('nav [role="tab"]'),
+      ).find((tab) => tab.textContent?.trim() === 'MCP');
+
+      await act(async () => {
+        (mcpTab as HTMLButtonElement).click();
+      });
+
+      expect(view.container.textContent).toContain('一键配置 Unity MCP');
+      expect(view.container.textContent).toContain(
+        'Packages/manifest.json',
+      );
+      expect(view.container.textContent).toContain('.mcp.json');
+    } finally {
+      await view.cleanup();
+    }
+  });
+
+  it('always shows all game MCP candidates even when the project engine is unknown', async () => {
+    const view = await renderProjectSettingsModal(unknownScan());
+
+    try {
+      const mcpTab = Array.from(
+        view.container.querySelectorAll('nav [role="tab"]'),
+      ).find((tab) => tab.textContent?.trim() === 'MCP');
+
+      await act(async () => {
+        (mcpTab as HTMLButtonElement).click();
+      });
+
+      expect(view.container.textContent).toContain('游戏 MCP 候选');
+      expect(view.container.textContent).toContain('一键配置 Unity MCP');
+      expect(view.container.textContent).toContain('一键配置 Unreal MCP');
+      expect(view.container.textContent).toContain('Godot MCP');
+      expect(view.container.textContent).toContain('Cocos MCP');
+      expect(view.container.textContent).toContain(
+        '是否安装由用户自己决定',
+      );
     } finally {
       await view.cleanup();
     }

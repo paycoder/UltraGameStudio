@@ -7,6 +7,8 @@ import ToolCard from './ToolCard';
 import type { ToolEvent } from './lib/toolEvent';
 import type { OpenFileFn } from './FileChip';
 import { answerActionText } from './lib/messageText';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 /** Group tool events into parents + their `parentId` children (one level). */
 function nestTools(events: ToolEvent[]): Array<{ event: ToolEvent; children: ToolEvent[] }> {
@@ -47,6 +49,7 @@ function MessageContentImpl({
   onOpenFile?: OpenFileFn;
   cwd?: string;
 }) {
+  const locale = useStore((s) => s.locale);
   const segments = segmentMessage(text, streaming);
 
   if (segments.length === 0) {
@@ -74,7 +77,7 @@ function MessageContentImpl({
         <div className="absolute -top-1 right-0 z-10 opacity-0 transition-opacity group-hover/msg:opacity-100">
           <CopyButton
             value={copyText}
-            label="复制"
+            label={t(locale, 'chat.copy')}
             className="rounded border border-border-soft bg-panel-2/80 px-1.5 py-0.5 text-[11px] backdrop-blur"
           />
         </div>

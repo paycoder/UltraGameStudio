@@ -42,6 +42,19 @@ describe('sessionCompletionNotificationText', () => {
       body: '图片生成 · Provider 不可用',
     });
   });
+
+  it('formats waiting-input notifications with the interaction prompt', () => {
+    expect(
+      sessionCompletionNotificationText({
+        status: 'waitingInput',
+        sessionTitle: '远程部署',
+        detail: '请选择部署环境',
+      }),
+    ).toEqual({
+      title: '会话已暂停，等待你的输入',
+      body: '远程部署 · 请选择部署环境',
+    });
+  });
 });
 
 describe('isNotifiableCompletionStatus', () => {
@@ -96,5 +109,34 @@ describe('notifySessionComplete', () => {
 
     expect(clicks).toEqual([{ workspaceId: 'w_1', sessionId: 's_1' }]);
     dispose();
+  });
+
+  it('keeps waiting-input web notifications visible longer', async () => {
+    const close = vi.fn();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+    class MockNotification {
+      static permission: NotificationPermission = 'granted';
+      static requestPermission = vi.fn();
+
+      onclick: (() => void) | null = null;
+      close = close;
+
+      constructor(public title: string, public options?: NotificationOptions) {}
+    }
+
+    Object.defineProperty(globalThis, 'Notification', {
+      configurable: true,
+      writable: true,
+      value: MockNotification,
+    });
+
+    await notifySessionComplete({
+      status: 'waitingInput',
+      sessionTitle: '测试',
+      detail: '请选择',
+    });
+
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 15000);
   });
 });

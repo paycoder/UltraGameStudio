@@ -114,6 +114,20 @@ export const MESH_LIBRARY_CATEGORY_LABELS: Record<MeshLibraryCategory, string> =
   community: '社区',
 };
 
+const MESH_LIBRARY_CATEGORY_LABELS_EN: Record<MeshLibraryCategory, string> = {
+  free: 'Free / CC0',
+  marketplace: 'Marketplace / licensed',
+  community: 'Community',
+};
+
+export function meshLibraryCategoryLabel(
+  category: MeshLibraryCategory,
+  locale?: string,
+): string {
+  if (locale && locale !== 'zh-CN') return MESH_LIBRARY_CATEGORY_LABELS_EN[category];
+  return MESH_LIBRARY_CATEGORY_LABELS[category];
+}
+
 export const MESH_LIBRARIES: MeshLibraryDefinition[] = [
   {
     id: 'polyhaven',

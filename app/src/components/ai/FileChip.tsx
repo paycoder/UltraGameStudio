@@ -6,6 +6,8 @@ import {
   fileRefLineSuffix,
   type FileRef,
 } from './lib/filePath';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 export interface OpenFileIntent {
   reveal?: boolean;
@@ -57,6 +59,7 @@ export default function FileChip({
   cwd?: string;
 }) {
   const [menu, setMenu] = useState<ContextMenuPosition | null>(null);
+  const locale = useStore((s) => s.locale);
   const lineSuffix = fileRefLineSuffix(refData);
   const displayPath = displayFileRefPath(refData, cwd);
   const label = displayFileRefLabel(refData, cwd);
@@ -106,7 +109,7 @@ export default function FileChip({
         onContextMenu={openContextMenu}
         title={
           interactive
-            ? `${label}\n右键：在文件夹中显示`
+            ? `${label}\n${t(locale, 'chat.revealHint')}`
             : label
         }
         className={
@@ -145,7 +148,7 @@ export default function FileChip({
             className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-border-soft"
           >
             <FolderOpen size={13} className="shrink-0 text-fg-faint" />
-            <span className="truncate">在文件夹中显示</span>
+            <span className="truncate">{t(locale, 'chat.reveal')}</span>
           </button>
         </div>
       )}

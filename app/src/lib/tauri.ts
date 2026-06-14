@@ -187,7 +187,7 @@ export interface IsolatedWorkspace {
   branch?: string | null;
 }
 
-export type ProjectEngineKind = 'unreal' | 'unity' | 'godot' | 'unknown';
+export type ProjectEngineKind = 'unreal' | 'unity' | 'godot' | 'cocos' | 'unknown';
 
 export interface ProjectEngineDetection {
   engine: ProjectEngineKind;
@@ -215,6 +215,7 @@ export interface ProjectMcpServerSuggestion {
   command: string;
   args: string[];
   env: Record<string, string>;
+  url?: string | null;
   available: boolean;
   availabilityNote: string;
   requiresUserApproval: boolean;
@@ -290,6 +291,54 @@ export interface ProjectLspInstallResult {
 
 /** Stable server id shared by one-click install + the recommended UE suggestion. */
 export const UE_MCP_SERVER_ID = 'ue-mcp-for-all-versions';
+export const UNITY_MCP_SERVER_ID = 'unity-mcp';
+export const GODOT_MCP_SERVER_ID = 'godot-mcp';
+export const COCOS_MCP_SERVER_ID = 'cocos-mcp-server';
+
+export interface UnityMcpSetupRequest {
+  rootPath: string;
+  writeManifest?: boolean;
+  writeMcpConfig?: boolean;
+  dryRun?: boolean;
+}
+
+export interface UnityMcpSetupResult {
+  ok: boolean;
+  changed: boolean;
+  dryRun: boolean;
+  packageId: string;
+  packageUrl: string;
+  configuredFiles: string[];
+  changedFiles: string[];
+  notes: string[];
+  warnings: string[];
+  error?: string | null;
+  serverCommand: string;
+  serverArgs: string[];
+}
+
+export interface GenericProjectMcpSetupRequest {
+  rootPath: string;
+  dryRun?: boolean;
+}
+
+export interface GenericProjectMcpSetupResult {
+  ok: boolean;
+  changed: boolean;
+  dryRun: boolean;
+  serverId: string;
+  label: string;
+  description: string;
+  transport: 'stdio' | 'streamable-http' | string;
+  serverCommand?: string | null;
+  serverArgs: string[];
+  serverUrl?: string | null;
+  configuredFiles: string[];
+  changedFiles: string[];
+  notes: string[];
+  warnings: string[];
+  error?: string | null;
+}
 
 /** Result of ensuring the pinned UE MCP binary is downloaded + sha256-verified. */
 export interface UeMcpBinaryStatus {
@@ -451,6 +500,7 @@ export interface SessionNotificationClickPayload {
 export interface DesktopSessionNotificationInput extends SessionNotificationClickPayload {
   title: string;
   body: string;
+  kind?: 'success' | 'error' | 'waitingInput';
 }
 
 /**
@@ -510,6 +560,7 @@ export async function notifySessionCompleteDesktop(
     body: input.body,
     workspaceId: input.workspaceId,
     sessionId: input.sessionId,
+    kind: input.kind ?? 'success',
   });
 }
 
@@ -1141,6 +1192,41 @@ export async function installProjectLspServer(
     });
   }
   return result;
+}
+
+/**
+ * Configure a Unity project for wellingfeng/unity-mcp: add the Unity package
+ * Git dependency, merge project `.mcp.json`, and return the stdio server config
+ * the project settings UI should register.
+ */
+export async function unityMcpSetupProject(
+  request: UnityMcpSetupRequest,
+): Promise<UnityMcpSetupResult> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<UnityMcpSetupResult>('unity_mcp_setup_project', { request });
+}
+
+export async function godotMcpSetupProject(
+  request: GenericProjectMcpSetupRequest,
+): Promise<GenericProjectMcpSetupResult> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<GenericProjectMcpSetupResult>('godot_mcp_setup_project', { request });
+}
+
+export async function cocosMcpSetupProject(
+  request: GenericProjectMcpSetupRequest,
+): Promise<GenericProjectMcpSetupResult> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<GenericProjectMcpSetupResult>('cocos_mcp_setup_project', { request });
 }
 
 /**

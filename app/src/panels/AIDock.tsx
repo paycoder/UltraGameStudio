@@ -677,8 +677,9 @@ function assistantHeaderLabel(message: Message): string {
 
 function translatedAnswerTitle(target: Locale, locale: Locale): string {
   const option = LANGUAGE_SELECT_OPTIONS.find((item) => item.id === target);
-  if (!option) return `🌐 翻译为 ${target}`;
-  return `🌐 翻译为 ${localizeSelectOption(option, locale).label}`;
+  const prefix = locale === 'zh-CN' ? '🌐 翻译为 ' : '🌐 Translate to ';
+  if (!option) return `${prefix}${target}`;
+  return `${prefix}${localizeSelectOption(option, locale).label}`;
 }
 
 function isCaptureUtilityMessage(message: Message): boolean {
@@ -754,14 +755,14 @@ function MessageActionToolbar({
     <div className="relative mt-1 flex items-center gap-1">
       <CopyButton
         value={text}
-        title="复制 AI 回答"
+        title={t(locale, 'dock.copyAnswer')}
         className={messageActionButtonClass()}
       />
       <button
         type="button"
         onClick={onBranch}
-        title="从这里创建分支会话"
-        aria-label="创建会话分支"
+        title={t(locale, 'dock.branchFromHere')}
+        aria-label={t(locale, 'dock.branchAria')}
         className={messageActionButtonClass()}
       >
         <GitBranch size={14} />
@@ -770,8 +771,8 @@ function MessageActionToolbar({
         type="button"
         onClick={onRegenerate}
         disabled={!canRegenerate}
-        title="重新生成回答"
-        aria-label="重新生成回答"
+        title={t(locale, 'dock.regenerate')}
+        aria-label={t(locale, 'dock.regenerate')}
         className={messageActionButtonClass()}
       >
         <RotateCcw size={14} />
@@ -781,8 +782,8 @@ function MessageActionToolbar({
           type="button"
           onClick={() => onToggleMenu('model')}
           disabled={!canRegenerate || modelOptions.length === 0}
-          title="切换模型回答"
-          aria-label="切换模型回答"
+          title={t(locale, 'dock.switchModel')}
+          aria-label={t(locale, 'dock.switchModel')}
           aria-expanded={modelMenuOpen}
           className={messageActionButtonClass(modelMenuOpen)}
         >
@@ -837,8 +838,8 @@ function MessageActionToolbar({
           type="button"
           onClick={() => onToggleMenu('translate')}
           disabled={!text}
-          title="翻译回答"
-          aria-label="翻译回答"
+          title={t(locale, 'dock.translateAnswer')}
+          aria-label={t(locale, 'dock.translateAnswer')}
           aria-expanded={translateMenuOpen}
           className={messageActionButtonClass(translateMenuOpen)}
         >
@@ -871,8 +872,8 @@ function MessageActionToolbar({
       <button
         type="button"
         onClick={onDelete}
-        title="删除回答"
-        aria-label="删除回答"
+        title={t(locale, 'dock.deleteAnswer')}
+        aria-label={t(locale, 'dock.deleteAnswer')}
         className={messageActionButtonClass()}
       >
         <Trash2 size={14} />
@@ -882,8 +883,12 @@ function MessageActionToolbar({
           className="ml-auto inline-flex shrink-0 items-center gap-2 pl-2 font-mono text-[10px] text-fg-faint"
           title={
             usage.estimated
-              ? `本轮 tokens（本地估算）：输入 ${usage.inputTokens} · 输出 ${usage.outputTokens}`
-              : `本轮 tokens：输入 ${usage.inputTokens} · 输出 ${usage.outputTokens} · 缓存命中 ${usage.cachedInputTokens}`
+              ? locale === 'zh-CN'
+                ? `本轮 tokens（本地估算）：输入 ${usage.inputTokens} · 输出 ${usage.outputTokens}`
+                : `Turn tokens (local estimate): input ${usage.inputTokens} · output ${usage.outputTokens}`
+              : locale === 'zh-CN'
+                ? `本轮 tokens：输入 ${usage.inputTokens} · 输出 ${usage.outputTokens} · 缓存命中 ${usage.cachedInputTokens}`
+                : `Turn tokens: input ${usage.inputTokens} · output ${usage.outputTokens} · cache hit ${usage.cachedInputTokens}`
           }
         >
           <span className="inline-flex items-center gap-1">
@@ -1560,8 +1565,8 @@ function InteractionWidget({
  *   - 'dock' (default): the bottom dock described above — horizontal split,
  *     top-edge height resize, vertical width-resize divider.
  *   - 'chat': a full-height vertical chat surface used by simple workflows —
- *     AI return on top (fills the height), AI input pinned below. No canvas,
- *     no resize handles; reuses the exact same return/input JSX.
+ *     AI return on top (fills the height), AI input pinned below. No canvas;
+ *     drag the input card's visible top edge to resize the input area.
  */
 export default function AIDock({
   layout = 'dock',
@@ -2892,7 +2897,7 @@ export default function AIDock({
         rootPath: '',
         directory,
         entries: [],
-        message: '请先选择工作区。',
+        message: locale === 'zh-CN' ? '请先选择工作区。' : 'Please select a workspace first.',
       });
       return;
     }
@@ -4105,6 +4110,15 @@ export default function AIDock({
       }
       return;
     }
+    const imageMatch =
+      /^\/(?:image|img|draw|生图|画图|绘图|出图)(?:\s+([\s\S]*))?$/iu.exec(text);
+    if (imageMatch) {
+      const prompt = (imageMatch[1] ?? '').trim();
+      if (!prompt) return;
+      generateImagePrompt(text);
+      clearDraftIfNeeded();
+      return;
+    }
     const musicModeStart = /^\/music-mode-start(?:\s+([\s\S]*))?$/i.exec(text);
     if (musicModeStart) {
       const wasMusicMode = composer.musicMode;
@@ -4530,11 +4544,11 @@ export default function AIDock({
       if (!task || activeChatting) return;
       void (async () => {
         if (!(await ensureSelectedLocalChannelReady())) return;
-        sendPrompt(task, {
+        const accepted = sendPrompt(task, {
           forceGameExperts: true,
           ...(expertIds.length > 0 ? { gameExpertIds: expertIds } : {}),
         });
-        clearDraftIfNeeded();
+        if (accepted) clearDraftIfNeeded();
       })();
       return;
     }
@@ -4545,12 +4559,8 @@ export default function AIDock({
       // isolated working directory and repoint the session cwd at it. No-op for
       // 'local' mode or once the conversation has started.
       await ensureSessionStartupWorkspace();
-      sendPrompt(promptText);
-      if (overrideText === undefined || options.clearDraft) {
-        setComposerDraft('');
-        draftRef.current = '';
-        selectionRef.current = { start: 0, end: 0 };
-      }
+      const accepted = sendPrompt(promptText);
+      if (accepted) clearDraftIfNeeded();
     })();
   };
 
@@ -4802,7 +4812,11 @@ export default function AIDock({
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          appendChatNote(`✗ 翻译失败：${message}`, 'assistant', { localOnly: true });
+          appendChatNote(
+            (locale === 'zh-CN' ? `✗ 翻译失败：${message}` : `✗ Translation failed: ${message}`),
+            'assistant',
+            { localOnly: true },
+          );
         }
       })();
     },
@@ -5096,7 +5110,7 @@ export default function AIDock({
                         {isUser && m.text.trim() && (
                           <CopyButton
                             value={m.text}
-                            title="复制"
+                            title={t(locale, 'dock.copy')}
                             className="shrink-0 opacity-0 transition-opacity group-hover/msg:opacity-100"
                           />
                         )}
@@ -5242,19 +5256,6 @@ export default function AIDock({
         </div>
       )}
 
-      {/* Horizontal divider (chat layout only) — drag to re-split AI 返回 (top) /
-          AI 输入 (bottom). Hidden on a fresh session where the input floats in
-          the vertical center (no transcript to size against yet). */}
-      {isChat && !centerInput && (
-        <div
-          onMouseDown={onChatSplitStart}
-          title={t(locale, 'common.resizeHeight')}
-          className="group relative z-20 flex h-1.5 shrink-0 cursor-row-resize items-stretch justify-center"
-        >
-          <div className="h-0.5 w-full bg-transparent transition-colors group-hover:bg-accent/40" />
-        </div>
-      )}
-
       {/* AI input box. Dock: right column (resizable width). Chat: full-width
           row pinned below the return stream (resizable height).
           The textarea and tool row are wrapped in a single bordered card so they
@@ -5263,7 +5264,7 @@ export default function AIDock({
       <section
         className={
           'relative flex shrink-0 flex-col bg-transparent p-3 ' +
-          (centerInput ? 'mx-auto w-full max-w-3xl px-4 sm:px-6' : '')
+          (centerInput ? 'mx-auto w-full max-w-4xl px-4 sm:px-6' : '')
         }
         style={
           isChat
@@ -5340,7 +5341,7 @@ export default function AIDock({
           <div
             id="fuc-file-mention-suggestions"
             role="listbox"
-            aria-label="文件建议"
+            aria-label={t(locale, 'dock.fileSuggestions')}
             className="absolute bottom-[calc(100%+0.375rem)] left-3 right-3 z-50 max-h-72 overflow-y-auto rounded-md border border-border bg-panel shadow-2xl"
           >
             {fileMentionOptions.map((entry, index) => {
@@ -5394,7 +5395,7 @@ export default function AIDock({
               fileMentionOptions.length === 0 && (
                 <div className="flex items-center gap-2 px-3 py-2 text-sm text-fg-faint">
                   <Loader2 size={14} className="animate-spin text-accent" />
-                  <span>读取中</span>
+                  <span>{t(locale, 'dock.loading')}</span>
                 </div>
               )}
             {fileMentionListing.status === 'error' &&
@@ -5406,7 +5407,7 @@ export default function AIDock({
             {fileMentionListing.status === 'ready' &&
               fileMentionOptions.length === 0 && (
                 <div className="px-3 py-2 text-sm text-fg-faint">
-                  没有匹配的文件
+                  {t(locale, 'dock.noMatchingFiles')}
                 </div>
               )}
           </div>
@@ -5527,7 +5528,7 @@ export default function AIDock({
           onDrop={handleComposerDrop}
           className={
             'fuc-ai-input-card relative flex min-h-0 flex-1 flex-col rounded-lg border transition-colors focus-within:border-accent ' +
-            (centerInput ? 'min-h-[11rem] ' : '') +
+            (centerInput ? 'min-h-[14rem] ' : '') +
             (dropActive
               ? 'fuc-ai-input--drop border-accent '
               : isChat
@@ -5537,6 +5538,18 @@ export default function AIDock({
             (isReadOnly ? 'opacity-60 ' : '')
           }
         >
+          {isChat && !centerInput && (
+            <div
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                onChatSplitStart(event);
+              }}
+              title={t(locale, 'common.resizeHeight')}
+              className="group absolute -top-1 left-0 right-0 z-20 flex h-2 cursor-row-resize items-center justify-center"
+            >
+              <div className="h-0.5 w-full bg-transparent transition-colors group-hover:bg-accent/40" />
+            </div>
+          )}
           <textarea
             ref={inputRef}
             value={draft}
@@ -5685,7 +5698,8 @@ export default function AIDock({
                   : undefined
             }
             className={
-              'min-h-0 flex-1 resize-none border-0 bg-transparent px-3 pt-3 pb-2 text-sm leading-relaxed text-fg outline-none placeholder:text-fg-faint ' +
+              'min-h-0 flex-1 resize-none border-0 bg-transparent text-sm leading-relaxed text-fg outline-none placeholder:text-fg-faint ' +
+              (centerInput ? 'px-4 pt-4 pb-3 ' : 'px-3 pt-3 pb-2 ') +
               (isReadOnly ? 'cursor-not-allowed' : '')
             }
           />
@@ -5788,12 +5802,12 @@ export default function AIDock({
               onMouseDown={(e) => e.preventDefault()}
               onClick={startFileMention}
               disabled={isReadOnly}
-              title="提及工作区文件"
-              aria-label="提及工作区文件"
+              title={t(locale, 'dock.hintMention')}
+              aria-label={t(locale, 'dock.hintMention')}
               className={cn(composerToolButtonClass, 'gap-1 font-medium')}
             >
               <span className="font-mono text-sm font-semibold">@</span>
-              <span>提及</span>
+              <span>{t(locale, 'dock.hintMentionShort')}</span>
             </button>
 
             {/* Session cache TTL — choose how long the session context is kept
@@ -5806,7 +5820,9 @@ export default function AIDock({
                   ? t(locale, 'dock.cacheTtlLocked')
                   : t(locale, 'dock.cacheTtlTitle')
               }
-              options={cacheTtlOptions}
+              options={cacheTtlOptions.map((opt) =>
+                localizeSelectOption(opt, locale),
+              )}
               value={String(composer.cacheTtlMinutes)}
               onChange={(id) =>
                 setComposer({ cacheTtlMinutes: Number(id) })
@@ -5828,7 +5844,9 @@ export default function AIDock({
                   ? t(locale, 'dock.startupModeLocked')
                   : t(locale, 'dock.startupModeTitle')
               }
-              options={startupModeOptions}
+              options={startupModeOptions.map((opt) =>
+                localizeSelectOption(opt, locale),
+              )}
               value={composer.startupMode}
               onChange={(id) =>
                 setComposer({

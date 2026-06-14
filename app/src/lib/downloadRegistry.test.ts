@@ -129,6 +129,46 @@ describe('asset registry', () => {
     expect(parsed[0].title).toBe('a.png');
   });
 
+  it('drops oversized inline previews on persist but keeps them in memory', () => {
+    // A multi-MB base64 data URL would blow the localStorage quota and make the
+    // whole history fail to persist; it must be stripped on persist while a
+    // disk-backed localPath remains so it can be rebuilt on reload.
+    const bigPreview = `data:image/png;base64,${'A'.repeat(200_000)}`;
+    const id = registerAsset({
+      kind: 'image',
+      source: 'generated',
+      title: 'big.png',
+      previewUrl: bigPreview,
+    });
+    markAssetDone(id, { localPath: '/ws/big.png' });
+
+    // In-memory copy keeps the inline preview for the current session.
+    expect(getAssets()[0].previewUrl).toBe(bigPreview);
+
+    // Persisted copy drops it but retains the localPath to rebuild from.
+    const raw = window.localStorage.getItem('freeultracode.assets.v1');
+    const parsed = JSON.parse(raw as string) as Array<{
+      previewUrl?: string;
+      localPath?: string;
+    }>;
+    expect(parsed[0].previewUrl).toBeUndefined();
+    expect(parsed[0].localPath).toBe('/ws/big.png');
+  });
+
+  it('keeps small inline previews when persisting', () => {
+    const smallPreview = 'data:image/png;base64,AAAA';
+    const id = registerAsset({
+      kind: 'image',
+      source: 'generated',
+      title: 'small.png',
+      previewUrl: smallPreview,
+    });
+    markAssetDone(id, { localPath: '/ws/small.png' });
+    const raw = window.localStorage.getItem('freeultracode.assets.v1');
+    const parsed = JSON.parse(raw as string) as Array<{ previewUrl?: string }>;
+    expect(parsed[0].previewUrl).toBe(smallPreview);
+  });
+
   it('does not persist pending entries', () => {
     registerAsset({ kind: 'image', source: 'generated', title: 'a.png' });
     const raw = window.localStorage.getItem('freeultracode.assets.v1');

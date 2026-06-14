@@ -2,6 +2,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronsDownUp, ChevronsUpDown, WrapText } from 'lucide-react';
 import CopyButton from './CopyButton';
 import { highlightCode } from './lib/highlight';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 /** Collapse tall code blocks past this many lines behind an expand toggle. */
 const DEFAULT_MAX_LINES = 22;
@@ -23,6 +25,7 @@ export default function RawCodeBlock({
 }) {
   const [wrap, setWrap] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const locale = useStore((s) => s.locale);
   const code = raw.replace(/\n$/, '');
   const lineCount = useMemo(() => code.split('\n').length, [code]);
   const tall = lineCount > maxLines;
@@ -45,7 +48,7 @@ export default function RawCodeBlock({
         <span className="font-mono text-[10px] uppercase tracking-wider text-fg-faint">
           {lang ?? 'text'}
           {tall && (
-            <span className="ml-2 text-fg-faint/70">{lineCount} 行</span>
+            <span className="ml-2 text-fg-faint/70">{lineCount} {t(locale, 'chat.lines')}</span>
           )}
         </span>
         <div className="flex items-center gap-2">
@@ -53,8 +56,8 @@ export default function RawCodeBlock({
             <button
               type="button"
               onClick={() => setExpanded((e) => !e)}
-              title={expanded ? '收起' : '展开全部'}
-              aria-label={expanded ? '收起代码' : '展开代码'}
+              title={expanded ? t(locale, 'chat.collapse') : t(locale, 'chat.expandAll')}
+              aria-label={expanded ? t(locale, 'chat.collapseCode') : t(locale, 'chat.expandCode')}
               className="inline-flex items-center rounded p-0.5 text-fg-faint transition-colors hover:text-fg"
             >
               {expanded ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
@@ -63,8 +66,8 @@ export default function RawCodeBlock({
           <button
             type="button"
             onClick={() => setWrap((w) => !w)}
-            title={wrap ? '取消自动换行' : '自动换行'}
-            aria-label="切换自动换行"
+            title={wrap ? t(locale, 'chat.wrapOff') : t(locale, 'chat.wrapOn')}
+            aria-label={t(locale, 'chat.toggleWrap')}
             className={
               'inline-flex items-center rounded p-0.5 transition-colors ' +
               (wrap ? 'text-accent' : 'text-fg-faint hover:text-fg')
@@ -72,7 +75,7 @@ export default function RawCodeBlock({
           >
             <WrapText size={13} />
           </button>
-          <CopyButton value={code} label="复制" className="px-1 py-0.5" />
+          <CopyButton value={code} label={t(locale, 'chat.copy')} className="px-1 py-0.5" />
         </div>
       </div>
       <div

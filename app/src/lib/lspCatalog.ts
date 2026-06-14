@@ -1197,6 +1197,18 @@ function markerForEngine(engine: ProjectEngineKind | 'auto' | undefined): Projec
       },
     ];
   }
+  if (engine === 'cocos') {
+    return [
+      {
+        id: 'typescript',
+        label: PROJECT_LANGUAGE_LABELS.typescript,
+        fileCount: 0,
+        markerCount: 1,
+        confidence: 0.7,
+        markers: ['Cocos'],
+      },
+    ];
+  }
   return [];
 }
 

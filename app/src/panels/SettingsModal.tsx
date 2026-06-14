@@ -115,6 +115,7 @@ import {
   type SlashSuggestion,
 } from '@/lib/slashCommands';
 import LocalModelSetupDialog from '@/components/LocalModelSetupDialog';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import {
   APP_VERSION,
   REPO_URL,
@@ -444,6 +445,12 @@ function inputValueAfterPaste(event: ReactClipboardEvent<HTMLInputElement>): str
   return `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
 }
 
+function stopSettingsInputKeyPropagation(
+  event: ReactKeyboardEvent<HTMLInputElement>,
+): void {
+  event.stopPropagation();
+}
+
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<SettingsTab>('general');
   const cliRuntime = useCliRuntimeState();
@@ -656,13 +663,21 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               ) : tab === 'models' ? (
                 <ChannelsSettings locale={locale} cliRuntime={cliRuntime} />
               ) : tab === 'imageGeneration' ? (
-                <ImageGenerationSettingsPanel locale={locale} />
+                <ErrorBoundary label={t(locale, 'settings.tabs.imageGeneration')}>
+                  <ImageGenerationSettingsPanel locale={locale} />
+                </ErrorBoundary>
               ) : tab === 'musicGeneration' ? (
-                <MusicGenerationSettingsPanel locale={locale} />
+                <ErrorBoundary label={t(locale, 'settings.tabs.musicGeneration')}>
+                  <MusicGenerationSettingsPanel locale={locale} />
+                </ErrorBoundary>
               ) : tab === 'videoGeneration' ? (
-                <VideoGenerationSettingsPanel locale={locale} />
+                <ErrorBoundary label={t(locale, 'settings.tabs.videoGeneration')}>
+                  <VideoGenerationSettingsPanel locale={locale} />
+                </ErrorBoundary>
               ) : tab === 'speechGeneration' ? (
-                <SpeechGenerationSettingsPanel locale={locale} />
+                <ErrorBoundary label={t(locale, 'settings.tabs.speechGeneration')}>
+                  <SpeechGenerationSettingsPanel locale={locale} />
+                </ErrorBoundary>
               ) : tab === 'threeDGeneration' ? (
                 <ThreeDGenerationSettingsPanel locale={locale} />
               ) : tab === 'rigging' ? (
@@ -3231,7 +3246,7 @@ function ImageGenerationSettingsPanel({ locale }: { locale: Locale }) {
   const update = (patch: Partial<ImageGenerationSettings>) => {
     const next = { ...settings, ...patch };
     saveImageGenerationSettings(next);
-    setSettings(loadImageGenerationSettings());
+    setSettings(next);
   };
 
   const providerOptions = IMAGE_PROVIDERS.map((provider) => ({
@@ -3334,7 +3349,7 @@ function ImageGenerationSettingsPanel({ locale }: { locale: Locale }) {
               locale={locale}
               onChange={(next) => {
                 saveImageGenerationSettings(next);
-                setSettings(loadImageGenerationSettings());
+                setSettings(next);
               }}
             />
           ))}
@@ -3772,7 +3787,7 @@ function MusicGenerationSettingsPanel({ locale }: { locale: Locale }) {
   const update = (patch: Partial<MusicGenerationSettings>) => {
     const next = { ...settings, ...patch };
     saveMusicGenerationSettings(next);
-    setSettings(loadMusicGenerationSettings());
+    setSettings(next);
   };
 
   const providerOptions = MUSIC_PROVIDERS.map((provider) => ({
@@ -3876,7 +3891,7 @@ function MusicGenerationSettingsPanel({ locale }: { locale: Locale }) {
               locale={locale}
               onChange={(next) => {
                 saveMusicGenerationSettings(next);
-                setSettings(loadMusicGenerationSettings());
+                setSettings(next);
               }}
             />
           ))}
@@ -4192,7 +4207,7 @@ function VideoGenerationSettingsPanel({ locale }: { locale: Locale }) {
   const update = (patch: Partial<VideoGenerationSettings>) => {
     const next = { ...settings, ...patch };
     saveVideoGenerationSettings(next);
-    setSettings(loadVideoGenerationSettings());
+    setSettings(next);
   };
 
   const providerOptions = VIDEO_PROVIDERS.map((provider) => ({
@@ -4296,7 +4311,7 @@ function VideoGenerationSettingsPanel({ locale }: { locale: Locale }) {
               locale={locale}
               onChange={(next) => {
                 saveVideoGenerationSettings(next);
-                setSettings(loadVideoGenerationSettings());
+                setSettings(next);
               }}
             />
           ))}
@@ -4503,6 +4518,7 @@ function VideoProviderSettingsRow({
               type="text"
               value={baseUrl}
               onChange={(event) => patchProvider({ baseUrl: event.target.value })}
+              onKeyDown={stopSettingsInputKeyPropagation}
               placeholder={effectiveBaseUrl || provider.endpointPlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -4521,6 +4537,7 @@ function VideoProviderSettingsRow({
                 type={showKey ? 'text' : 'password'}
                 value={keyValue}
                 onChange={(event) => patchProvider({ key: event.target.value })}
+                onKeyDown={stopSettingsInputKeyPropagation}
                 onPaste={(event) => {
                   const nextValue = inputValueAfterPaste(event);
                   if (nextValue != null) patchProvider({ key: nextValue });
@@ -4612,7 +4629,7 @@ function SpeechGenerationSettingsPanel({ locale }: { locale: Locale }) {
   const update = (patch: Partial<SpeechGenerationSettings>) => {
     const next = { ...settings, ...patch };
     saveSpeechGenerationSettings(next);
-    setSettings(loadSpeechGenerationSettings());
+    setSettings(next);
   };
 
   const providerOptions = SPEECH_PROVIDERS.map((provider) => ({
@@ -4716,7 +4733,7 @@ function SpeechGenerationSettingsPanel({ locale }: { locale: Locale }) {
               locale={locale}
               onChange={(next) => {
                 saveSpeechGenerationSettings(next);
-                setSettings(loadSpeechGenerationSettings());
+                setSettings(next);
               }}
             />
           ))}
@@ -4951,6 +4968,7 @@ function SpeechProviderSettingsRow({
               type="text"
               value={baseUrl}
               onChange={(event) => patchProvider({ baseUrl: event.target.value })}
+              onKeyDown={stopSettingsInputKeyPropagation}
               placeholder={effectiveBaseUrl || provider.endpointPlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -4969,6 +4987,7 @@ function SpeechProviderSettingsRow({
                 type={showKey ? 'text' : 'password'}
                 value={keyValue}
                 onChange={(event) => patchProvider({ key: event.target.value })}
+                onKeyDown={stopSettingsInputKeyPropagation}
                 onPaste={(event) => {
                   const nextValue = inputValueAfterPaste(event);
                   if (nextValue != null) patchProvider({ key: nextValue });
@@ -5015,6 +5034,7 @@ function SpeechProviderSettingsRow({
               type="text"
               value={accountIdValue}
               onChange={(event) => patchProvider({ accountId: event.target.value })}
+              onKeyDown={stopSettingsInputKeyPropagation}
               placeholder={provider.accountIdPlaceholder ?? ''}
               autoComplete="off"
               spellCheck={false}
@@ -5031,6 +5051,7 @@ function SpeechProviderSettingsRow({
             type="text"
             value={voice}
             onChange={(event) => patchProvider({ voice: event.target.value })}
+            onKeyDown={stopSettingsInputKeyPropagation}
             placeholder={provider.defaultVoice || 'voice id'}
             autoComplete="off"
             spellCheck={false}

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Check, ChevronRight, Loader2, X } from 'lucide-react';
 import type { ToolEvent } from './lib/toolEvent';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 import ToolIcon from './ToolIcon';
 import { scanFileRefs } from './lib/fileScan';
 import FileChip, { type OpenFileFn } from './FileChip';
@@ -70,6 +72,7 @@ export default function ToolCard({
   cwd?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const locale = useStore((s) => s.locale);
 
   const subject = event.subject ?? '';
   const collapsedSubject = compactToolSubject(event.name, subject);
@@ -120,7 +123,7 @@ export default function ToolCard({
             type="button"
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
-            aria-label={open ? '收起' : '展开'}
+            aria-label={open ? t(locale, 'chat.collapse') : t(locale, 'chat.expand')}
             className="ai-tool-toggle -ml-0.5 flex shrink-0 items-center transition-colors"
           >
             <ChevronRight
@@ -151,21 +154,21 @@ export default function ToolCard({
         <div className="ai-tool-body px-2.5 py-1.5">
           {subjectCompacted && !argsBody && (
             <Panel
-              label="详情"
+              label={t(locale, 'chat.details')}
               body={subject}
               language={toolLanguage('details', subject)}
             />
           )}
           {argsBody && (
             <Panel
-              label="请求"
+              label={t(locale, 'chat.request')}
               body={argsBody}
               language={toolLanguage('request', argsBody, argsIsJson)}
             />
           )}
           {event.result != null && event.result !== '' && (
             <Panel
-              label={event.truncated ? '响应（已截断）' : '响应'}
+              label={event.truncated ? t(locale, 'chat.responseTruncated') : t(locale, 'chat.response')}
               body={event.result}
               language={toolLanguage('response', event.result)}
             />

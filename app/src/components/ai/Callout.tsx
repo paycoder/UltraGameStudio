@@ -7,16 +7,18 @@ import {
   OctagonAlert,
 } from 'lucide-react';
 import type { CalloutKind } from './lib/callout';
+import { useStore } from '@/store/useStore';
+import { t, type TranslationKey } from '@/lib/i18n';
 
 const META: Record<
   CalloutKind,
-  { label: string; icon: typeof Info; varName: string }
+  { labelKey: TranslationKey; icon: typeof Info; varName: string }
 > = {
-  note: { label: '注', icon: Info, varName: '--accent' },
-  tip: { label: '提示', icon: Lightbulb, varName: '--accent-2' },
-  important: { label: '要点', icon: MessageSquareWarning, varName: '--accent-4' },
-  warning: { label: '警告', icon: AlertTriangle, varName: '--status-running' },
-  caution: { label: '注意', icon: OctagonAlert, varName: '--status-error' },
+  note: { labelKey: 'callout.note', icon: Info, varName: '--accent' },
+  tip: { labelKey: 'callout.tip', icon: Lightbulb, varName: '--accent-2' },
+  important: { labelKey: 'callout.important', icon: MessageSquareWarning, varName: '--accent-4' },
+  warning: { labelKey: 'callout.warning', icon: AlertTriangle, varName: '--status-running' },
+  caution: { labelKey: 'callout.caution', icon: OctagonAlert, varName: '--status-error' },
 };
 
 /** A GitHub-style alert banner: colored left border + icon + label + body. */
@@ -27,6 +29,7 @@ export default function Callout({
   kind: CalloutKind;
   children: ReactNode;
 }) {
+  const locale = useStore((s) => s.locale);
   const meta = META[kind];
   const Icon = meta.icon;
   const accent = `var(${meta.varName})`;
@@ -44,7 +47,7 @@ export default function Callout({
         style={{ color: accent }}
       >
         <Icon size={13} />
-        <span>{meta.label}</span>
+        <span>{t(locale, meta.labelKey)}</span>
       </div>
       <div className="ai-callout__body text-fg-dim">{children}</div>
     </div>

@@ -127,10 +127,29 @@ describe('mcpCatalog', () => {
     const gameServers = MCP_CATALOG.filter((server) => server.category === 'game');
     const ids = gameServers.map((server) => server.id);
     expect(ids).toEqual(
-      expect.arrayContaining(['blender-mcp', 'unity-mcp', 'unreal-mcp', 'godot-mcp']),
+      expect.arrayContaining([
+        'blender-mcp',
+        'unity-mcp',
+        'unreal-mcp',
+        'godot-mcp',
+        'cocos-mcp-server',
+      ]),
     );
     // Engine MCP servers touch the user's editor, so they require approval.
     expect(gameServers.every((server) => server.requiresUserApproval === true)).toBe(true);
+    expect(MCP_CATALOG.find((server) => server.id === 'godot-mcp')).toMatchObject({
+      command: 'npx',
+      args: ['-y', '@coding-solo/godot-mcp'],
+      sourceUrl: 'https://github.com/wellingfeng/godot-mcp',
+    });
+    expect(MCP_CATALOG.find((server) => server.id === 'unity-mcp')).toMatchObject({
+      sourceUrl: 'https://github.com/wellingfeng/unity-mcp',
+    });
+    expect(MCP_CATALOG.find((server) => server.id === 'cocos-mcp-server')).toMatchObject({
+      transport: 'streamable-http',
+      url: 'http://localhost:3000/mcp',
+      sourceUrl: 'https://github.com/wellingfeng/cocos-mcp-server',
+    });
   });
 
   it('surfaces game MCP servers via free-text search', () => {

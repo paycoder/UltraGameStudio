@@ -19,6 +19,12 @@ import {
 } from '@/lib/spriteGeneration';
 
 export const PREFERRED_UNREAL_MCP_SERVER_ID = 'ue-mcp-for-all-versions';
+const GAME_MCP_SERVER_IDS = new Set([
+  'unity-mcp',
+  PREFERRED_UNREAL_MCP_SERVER_ID,
+  'godot-mcp',
+  'cocos-mcp-server',
+]);
 
 /**
  * Normalize a list of workspace-folder paths: trim, drop empties, and dedupe by
@@ -81,6 +87,7 @@ export interface ProjectLspSettings {
 export type ProjectGameExpertEngine = 'auto' | 'unity' | 'unreal' | 'godot';
 
 export interface ProjectGameFeatureSettings {
+  isGameProject: boolean;
   meshGeneration: boolean;
   rigging: boolean;
   gameExperts: boolean;
@@ -178,8 +185,21 @@ function isProjectSpriteMode(value: unknown): value is ProjectSpriteMode {
 
 export function isGameProjectEngine(
   engine: ProjectEngineKind | 'auto',
-): engine is Extract<ProjectEngineKind, 'unreal' | 'unity' | 'godot'> {
-  return engine === 'unreal' || engine === 'unity' || engine === 'godot';
+): engine is Extract<ProjectEngineKind, 'unreal' | 'unity' | 'godot' | 'cocos'> {
+  return (
+    engine === 'unreal' ||
+    engine === 'unity' ||
+    engine === 'godot' ||
+    engine === 'cocos'
+  );
+}
+
+function gameExpertEngineForProjectEngine(
+  engine: ProjectEngineKind | 'auto',
+): ProjectGameExpertEngine {
+  return engine === 'unity' || engine === 'unreal' || engine === 'godot'
+    ? engine
+    : 'auto';
 }
 
 export function gameFeatureDefaultsForEngine(
@@ -187,10 +207,11 @@ export function gameFeatureDefaultsForEngine(
 ): ProjectGameFeatureSettings {
   const enabled = isGameProjectEngine(engine);
   return {
+    isGameProject: enabled,
     meshGeneration: enabled,
     rigging: enabled,
     gameExperts: enabled,
-    gameExpertEngine: enabled ? engine : 'auto',
+    gameExpertEngine: gameExpertEngineForProjectEngine(engine),
   };
 }
 
@@ -324,12 +345,20 @@ export function projectSettingsFromMetadata(
   const uiDesignDefaultChannelId = isUiDesignChannelId(uiDesign.defaultChannelId)
     ? uiDesign.defaultChannelId
     : defaults.uiDesign.defaultChannelId;
+  const isGameProject =
+    typeof gameFeatures.isGameProject === 'boolean'
+      ? gameFeatures.isGameProject
+      : gameFeatures.meshGeneration === true ||
+        gameFeatures.rigging === true ||
+        gameFeatures.gameExperts === true ||
+        uiDesign.enabled === true;
   return {
     schemaVersion: PROJECT_SETTINGS_SCHEMA_VERSION,
     engine:
       raw.engine === 'unreal' ||
       raw.engine === 'unity' ||
       raw.engine === 'godot' ||
+      raw.engine === 'cocos' ||
       raw.engine === 'unknown'
         ? raw.engine
         : 'auto',
@@ -352,9 +381,10 @@ export function projectSettingsFromMetadata(
       servers: lspServers,
     },
     gameFeatures: {
-      meshGeneration: gameFeatures.meshGeneration === true,
-      rigging: gameFeatures.rigging === true,
-      gameExperts: gameFeatures.gameExperts === true,
+      isGameProject,
+      meshGeneration: isGameProject && gameFeatures.meshGeneration === true,
+      rigging: isGameProject && gameFeatures.rigging === true,
+      gameExperts: isGameProject && gameFeatures.gameExperts === true,
       gameExpertEngine: isProjectGameExpertEngine(gameFeatures.gameExpertEngine)
         ? gameFeatures.gameExpertEngine
         : defaults.gameFeatures.gameExpertEngine,
@@ -369,7 +399,7 @@ export function projectSettingsFromMetadata(
         : defaults.sprite.defaultProviderId,
     },
     uiDesign: {
-      enabled: uiDesign.enabled === true,
+      enabled: isGameProject && uiDesign.enabled === true,
       mode: uiDesignMode,
       defaultChannelId: uiDesignDefaultChannelId,
     },
@@ -408,6 +438,7 @@ export function serverFromSuggestion(
     command: suggestion.command,
     args: suggestion.args,
     env: suggestion.env,
+    url: suggestion.url ?? undefined,
     requiresUserApproval: suggestion.requiresUserApproval,
   };
 }
@@ -504,27 +535,32 @@ export function mergeRecommendedMcpServers(
   settings: ProjectSettings,
   scan: ProjectEnvironmentScan,
 ): ProjectSettings {
+  let base = settings;
   const preferredUnrealSuggestion = scan.suggestedMcpServers.find(
     (server) => server.id === PREFERRED_UNREAL_MCP_SERVER_ID,
   );
-  if (scan.engine.engine === 'unreal' && preferredUnrealSuggestion) {
-    return settingsWithDetectedGameFeatures(
-      preferUnrealMcpServer(settings, serverFromSuggestion(preferredUnrealSuggestion)),
-      scan,
+  if (preferredUnrealSuggestion) {
+    base = preferUnrealMcpServer(
+      base,
+      serverFromSuggestion(preferredUnrealSuggestion),
     );
   }
 
-  const existingIds = new Set(settings.mcp.servers.map((server) => server.id));
+  const existingIds = new Set(base.mcp.servers.map((server) => server.id));
   const additions = scan.suggestedMcpServers
-    .filter((server) => !existingIds.has(server.id))
+    .filter(
+      (server) =>
+        !existingIds.has(server.id) &&
+        (scan.engine.engine === 'unknown' || GAME_MCP_SERVER_IDS.has(server.id)),
+    )
     .map(serverFromSuggestion);
   const next = {
-    ...settings,
+    ...base,
     engine: scan.engine.engine,
     mcp: {
-      ...settings.mcp,
+      ...base.mcp,
       enabled: true,
-      servers: [...settings.mcp.servers, ...additions],
+      servers: [...base.mcp.servers, ...additions],
     },
   };
   return settingsWithDetectedGameFeatures(next, scan);
@@ -551,6 +587,8 @@ export function projectEngineLabel(engine: ProjectEngineKind | 'auto'): string {
       return 'Unity';
     case 'godot':
       return 'Godot';
+    case 'cocos':
+      return 'Cocos';
     case 'unknown':
       return '未识别';
     default:
@@ -599,6 +637,6 @@ export function projectHealth(
   return {
     tone: 'none',
     label: '无项目 MCP',
-    detail: '未识别 UE / Unity / Godot 项目',
+    detail: '未识别 UE / Unity / Godot / Cocos 项目',
   };
 }

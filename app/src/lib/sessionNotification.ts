@@ -8,18 +8,26 @@ import {
 } from '@/lib/tauri';
 
 export type SessionCompletionStatus = Extract<IRRunStatus, 'success' | 'error'>;
+export type SessionNotificationKind = SessionCompletionStatus | 'waitingInput';
 
 export interface SessionCompletionNotificationInput {
-  status: SessionCompletionStatus;
+  status: SessionNotificationKind;
   sessionTitle?: string | null;
   detail?: string | null;
   workspaceId?: string | null;
   sessionId?: string | null;
 }
 
-const FALLBACK_BODY: Record<SessionCompletionStatus, string> = {
+const FALLBACK_BODY: Record<SessionNotificationKind, string> = {
   success: '可以回到 FreeUltraCode 查看结果。',
   error: '请回到 FreeUltraCode 查看错误详情。',
+  waitingInput: '请回到 FreeUltraCode 选择或输入后继续。',
+};
+
+const WEB_NOTIFICATION_CLOSE_MS: Record<SessionNotificationKind, number> = {
+  success: 5000,
+  error: 5000,
+  waitingInput: 15000,
 };
 
 let tauriPermissionPromise: Promise<boolean> | null = null;
@@ -48,7 +56,12 @@ function truncateNotificationText(value: string, maxLength = 160): string {
 export function sessionCompletionNotificationText(
   input: SessionCompletionNotificationInput,
 ): { title: string; body: string } {
-  const title = input.status === 'success' ? '会话已完成' : '会话失败';
+  const title =
+    input.status === 'success'
+      ? '会话已完成'
+      : input.status === 'waitingInput'
+        ? '会话已暂停，等待你的输入'
+        : '会话失败';
   const parts = [
     compactNotificationText(input.sessionTitle),
     compactNotificationText(input.detail),
@@ -134,6 +147,7 @@ async function notifyViaTauri(input: SessionCompletionNotificationInput): Promis
     sent = await notifySessionCompleteDesktop({
       ...text,
       ...notificationTarget(input),
+      kind: input.status,
     });
   } catch {
     sent = false;
@@ -164,7 +178,10 @@ async function notifyViaWeb(input: SessionCompletionNotificationInput): Promise<
     notification.close();
     handleSessionNotificationClick(notificationTarget(input));
   };
-  globalThis.setTimeout(() => notification.close(), 5000);
+  globalThis.setTimeout(
+    () => notification.close(),
+    WEB_NOTIFICATION_CLOSE_MS[input.status],
+  );
 }
 
 export async function notifySessionComplete(

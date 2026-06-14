@@ -78,7 +78,7 @@ import { useStore } from '@/store/useStore';
 
 type ProjectPanelTab = 'files' | 'session';
 type ProjectTreeViewMode = 'tree' | 'preview';
-type ProjectEngine = 'unreal' | 'unity' | 'godot' | 'generic';
+type ProjectEngine = 'unreal' | 'unity' | 'godot' | 'cocos' | 'generic';
 
 type ThumbnailState =
   | { status: 'loading'; lastAccessed: number }
@@ -176,6 +176,7 @@ const ENGINE_LABELS: Record<ProjectEngine, string> = {
   unreal: 'Unreal',
   unity: 'Unity',
   godot: 'Godot',
+  cocos: 'Cocos',
   generic: '项目',
 };
 
@@ -183,6 +184,7 @@ const ENGINE_BADGES: Record<ProjectEngine, string> = {
   unreal: 'UE',
   unity: 'UNITY',
   godot: 'GODOT',
+  cocos: 'COCOS',
   generic: 'FILE',
 };
 
@@ -290,6 +292,12 @@ function detectProjectEngine(entries: WorkspaceTreeEntry[] | undefined): Project
   if (hasFile('project.godot')) return 'godot';
   if (
     hasDirectory('assets') &&
+    (hasFile('project.json') || hasDirectory('settings'))
+  ) {
+    return 'cocos';
+  }
+  if (
+    hasDirectory('assets') &&
     hasDirectory('projectsettings') &&
     (hasDirectory('packages') || hasDirectory('library'))
   ) {
@@ -304,6 +312,7 @@ function entryPreviewLabel(entry: WorkspaceTreeEntry, engine: ProjectEngine): st
     if (engine === 'unreal' && lower === 'content') return 'CONTENT';
     if (engine === 'unity' && lower === 'assets') return 'ASSETS';
     if (engine === 'godot' && lower === 'addons') return 'ADDONS';
+    if (engine === 'cocos' && lower === 'assets') return 'ASSETS';
     return 'DIR';
   }
 
@@ -328,6 +337,13 @@ function entryPreviewLabel(entry: WorkspaceTreeEntry, engine: ProjectEngine): st
     if (ext === 'gd') return 'GD';
     if (entry.name.toLowerCase() === 'project.godot') return 'PROJECT';
   }
+  if (engine === 'cocos') {
+    if (ext === 'scene') return 'SCENE';
+    if (ext === 'prefab') return 'PREFAB';
+    if (ext === 'fire') return 'SCENE';
+    if (ext === 'ts') return 'TS';
+    if (entry.name.toLowerCase() === 'project.json') return 'PROJECT';
+  }
 
   if (CODE_EXTENSIONS.has(ext)) return ext.toUpperCase();
   return ext ? ext.toUpperCase() : 'FILE';
@@ -348,6 +364,9 @@ function previewSurface(engine: ProjectEngine, entry: WorkspaceTreeEntry): strin
   }
   if (engine === 'godot') {
     return 'linear-gradient(135deg, #0b1220, #1d4ed8 48%, #60a5fa)';
+  }
+  if (engine === 'cocos') {
+    return 'linear-gradient(135deg, #102331, #145c64 48%, #22d3ee)';
   }
   return 'linear-gradient(135deg, var(--panel-2), color-mix(in oklab, var(--accent) 28%, var(--panel)))';
 }

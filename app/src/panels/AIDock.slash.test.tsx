@@ -319,7 +319,7 @@ describe('AIDock slash suggestions', () => {
   it('toggles sticky image mode via /image-mode-start and /image-mode-end', async () => {
     resetStore();
     const generateImagePrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateImagePrompt, sendPrompt });
     const view = await renderDock();
 
@@ -398,7 +398,7 @@ describe('AIDock slash suggestions', () => {
   it('enters image mode and generates when text follows /image-mode-start', async () => {
     resetStore();
     const generateImagePrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateImagePrompt, sendPrompt });
     const view = await renderDock();
 
@@ -431,7 +431,7 @@ describe('AIDock slash suggestions', () => {
   it('toggles sticky music mode via /music-mode-start and /music-mode-end', async () => {
     resetStore();
     const generateMusicPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateMusicPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -505,7 +505,7 @@ describe('AIDock slash suggestions', () => {
   it('enters music mode and generates when text follows /music-mode-start', async () => {
     resetStore();
     const generateMusicPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateMusicPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -537,7 +537,7 @@ describe('AIDock slash suggestions', () => {
   it('toggles sticky 3D mode via /mesh-mode-start and /mesh-mode-end', async () => {
     resetStore();
     const generateThreeDPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateThreeDPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -612,7 +612,7 @@ describe('AIDock slash suggestions', () => {
   it('enters 3D mode and generates when text follows /mesh-mode-start', async () => {
     resetStore();
     const generateThreeDPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateThreeDPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -645,7 +645,7 @@ describe('AIDock slash suggestions', () => {
   it('toggles sticky UI mode via /ui-mode-start and /ui-mode-end', async () => {
     resetStore();
     const generateUiPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateUiPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -714,7 +714,7 @@ describe('AIDock slash suggestions', () => {
   it('enters UI mode and generates when text follows /ui-mode-start', async () => {
     resetStore();
     const generateUiPrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateUiPrompt, sendPrompt });
     const view = await renderDock();
 
@@ -745,7 +745,7 @@ describe('AIDock slash suggestions', () => {
   it('toggles sticky sprite mode via /sprite-mode-start and /sprite-mode-end', async () => {
     resetStore();
     const generateSpritePrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateSpritePrompt, sendPrompt });
     const view = await renderDock();
 
@@ -822,7 +822,7 @@ describe('AIDock slash suggestions', () => {
   it('enters sprite mode and generates when text follows /sprite-mode-start', async () => {
     resetStore();
     const generateSpritePrompt = vi.fn();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     useStore.setState({ generateSpritePrompt, sendPrompt });
     const view = await renderDock();
 
@@ -1041,7 +1041,7 @@ describe('AIDock slash suggestions', () => {
 
   it('expands ordinary slash commands only when submitting', async () => {
     resetStore();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     const runUltracodePrompt = vi.fn();
     useStore.setState({ sendPrompt, runUltracodePrompt });
     const view = await renderDock();
@@ -1161,7 +1161,7 @@ describe('AIDock slash suggestions', () => {
 
   it('routes submitted /ultracode commands to the dynamic entrypoint', async () => {
     resetStore();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     const runUltracodePrompt = vi.fn();
     useStore.setState({ sendPrompt, runUltracodePrompt });
     const view = await renderDock();
@@ -1190,7 +1190,7 @@ describe('AIDock slash suggestions', () => {
 
   it('routes submitted /deep-research commands through ultracode', async () => {
     resetStore();
-    const sendPrompt = vi.fn();
+    const sendPrompt = vi.fn(() => true);
     const runUltracodePrompt = vi.fn();
     useStore.setState({ sendPrompt, runUltracodePrompt });
     const view = await renderDock();

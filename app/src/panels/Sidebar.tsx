@@ -241,6 +241,9 @@ function sessionVisibleInTab(session: Session, tab: SidebarTab): boolean {
 const sidebarTextButtonClassName =
   'group flex w-full items-center gap-3 rounded-sm px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:opacity-40';
 
+const sidebarPrimaryButtonClassName =
+  'group flex w-full items-center gap-3 rounded-md border border-border bg-accent/5 px-3 py-2 text-left text-sm font-medium text-fg transition-colors hover:border-accent/30 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:opacity-40';
+
 function historySessionRowClassName(active: boolean): string {
   return (
     'group flex w-full flex-col items-start gap-0.5 rounded-md border px-2 py-1.5 text-left transition-colors ' +
@@ -498,7 +501,7 @@ export default function Sidebar() {
     setWorkspaceMenu(null);
     void openWorkspaceDirectory(path).then((opened) => {
       if (!opened && typeof window !== 'undefined') {
-        window.alert('当前环境不能打开系统文件浏览器。请使用桌面端。');
+        window.alert(t(locale, 'sidebar.cannotOpenBrowser'));
       }
     });
   }, [workspaceMenu]);
@@ -1090,9 +1093,9 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={newSession}
-          className={sidebarTextButtonClassName}
+          className={sidebarPrimaryButtonClassName}
         >
-          <Plus size={17} className="shrink-0 text-fg-faint group-hover:text-fg" />
+          <Plus size={17} className="shrink-0 text-accent" />
           <span>{t(locale, 'sidebar.newSession')}</span>
         </button>
       </div>
@@ -1259,8 +1262,8 @@ export default function Sidebar() {
                       <button
                         type="button"
                         aria-expanded={!workspaceCollapsed}
-                        aria-label={workspaceCollapsed ? '展开工作区会话' : '收起工作区会话'}
-                        title={workspaceCollapsed ? '展开工作区会话' : '收起工作区会话'}
+                        aria-label={workspaceCollapsed ? t(locale, 'sidebar.expandWorkspaceSessions') : t(locale, 'sidebar.collapseWorkspaceSessions')}
+                        title={workspaceCollapsed ? t(locale, 'sidebar.expandWorkspaceSessions') : t(locale, 'sidebar.collapseWorkspaceSessions')}
                         onClick={() => toggleWorkspaceCollapsed(workspace.id)}
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border-soft bg-bg-alt text-fg-faint transition-colors hover:border-accent hover:text-fg"
                       >
@@ -1910,24 +1913,24 @@ function WorkspaceContextMenu({
         }}
       />
       <div
-        className="absolute z-40 min-w-[156px] overflow-hidden rounded-md border border-border bg-panel shadow-2xl"
+        className="absolute z-40 min-w-[196px] overflow-hidden rounded-md border border-border bg-panel shadow-2xl"
         style={{ left: x, top: y }}
       >
         <button
           type="button"
           disabled={openDirectoryDisabled}
           onClick={onOpenDirectory}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:bg-panel-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
+          className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:bg-panel-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
         >
-          <FolderOpen size={13} className="text-fg-faint" />
+          <FolderOpen size={13} className="shrink-0 text-fg-faint" />
           <span>{t(locale, 'sidebar.openWorkspaceDirectory')}</span>
         </button>
         <button
           type="button"
           onClick={onOpenSettings}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:bg-panel-2 hover:text-fg"
+          className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:bg-panel-2 hover:text-fg"
         >
-          <SettingsGlyph size={13} className="text-fg-faint" />
+          <SettingsGlyph size={13} className="shrink-0 text-fg-faint" />
           <span>{t(locale, 'sidebar.projectSettings')}</span>
         </button>
         <button
@@ -1935,9 +1938,9 @@ function WorkspaceContextMenu({
           disabled={removeDisabledReason != null}
           title={removeDisabledReason ?? undefined}
           onClick={onRemoveHistory}
-          className="flex w-full items-center gap-2 border-t border-border-soft px-3 py-2 text-left text-sm text-rose-300 transition-colors hover:bg-panel-2 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-rose-300"
+          className="flex w-full items-center gap-2 whitespace-nowrap border-t border-border-soft px-3 py-2 text-left text-sm text-rose-300 transition-colors hover:bg-panel-2 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-rose-300"
         >
-          <Trash2 size={13} className="text-rose-300/80" />
+          <Trash2 size={13} className="shrink-0 text-rose-300/80" />
           <span>{t(locale, 'sidebar.removeWorkspaceHistory')}</span>
         </button>
       </div>

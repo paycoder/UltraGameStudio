@@ -2,6 +2,8 @@ import { useEffect, useId, useState } from 'react';
 import { AlertTriangle, Workflow } from 'lucide-react';
 import CopyButton from './CopyButton';
 import RawCodeBlock from './RawCodeBlock';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 type MermaidRenderResult = {
   svg: string;
@@ -19,6 +21,7 @@ let mermaidReady = false;
 
 export default function MermaidBlock({ code }: { code: string }) {
   const reactId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const locale = useStore((s) => s.locale);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState('');
 
@@ -66,9 +69,9 @@ export default function MermaidBlock({ code }: { code: string }) {
         <div className="ai-mermaid__header flex items-center justify-between gap-2 border-b border-[var(--code-border)] bg-[var(--code-header-bg)] px-3 py-1.5">
           <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-fg-faint">
             <AlertTriangle size={13} className="shrink-0 text-danger" />
-            <span className="truncate">Mermaid 渲染失败</span>
+            <span className="truncate">{t(locale, 'mermaid.renderFailed')}</span>
           </span>
-          <CopyButton value={code} label="复制" className="px-1 py-0.5" />
+          <CopyButton value={code} label={t(locale, 'chat.copy')} className="px-1 py-0.5" />
         </div>
         <div className="px-3 py-2 text-xs text-fg-dim">{error}</div>
         <RawCodeBlock raw={code} language="mermaid" compact className="border-x-0 border-b-0" />
@@ -83,15 +86,15 @@ export default function MermaidBlock({ code }: { code: string }) {
           <Workflow size={13} className="shrink-0 text-accent" />
           <span className="truncate">mermaid</span>
         </span>
-        <CopyButton value={code} label="复制" className="px-1 py-0.5" />
+        <CopyButton value={code} label={t(locale, 'chat.copy')} className="px-1 py-0.5" />
       </div>
       <div
         className="ai-mermaid__body overflow-auto p-3"
-        aria-label="Mermaid 图表"
+        aria-label={t(locale, 'mermaid.diagram')}
         dangerouslySetInnerHTML={
           svg
             ? { __html: svg }
-            : { __html: '<span class="ai-mermaid__status">正在渲染图表...</span>' }
+            : { __html: `<span class="ai-mermaid__status">${t(locale, 'mermaid.rendering')}</span>` }
         }
       />
     </div>

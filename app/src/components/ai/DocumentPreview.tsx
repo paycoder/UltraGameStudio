@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, FileWarning, Loader2 } from 'lucide-react';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
 
 type DocStatus =
   | { status: 'loading' }
@@ -34,6 +36,7 @@ export default function DocumentPreview({
   mime: string;
   fileName: string;
 }) {
+  const locale = useStore((s) => s.locale);
   const [state, setState] = useState<DocStatus>({ status: 'loading' });
   const urlRef = useRef<string | null>(null);
 
@@ -52,7 +55,7 @@ export default function DocumentPreview({
       urlRef.current = null;
     }
     if (!bytes) {
-      setState({ status: 'error', message: '文档内容解码失败。' });
+      setState({ status: 'error', message: t(locale, 'doc.decodeFailed') });
       return;
     }
     setState({ status: 'loading' });
@@ -101,7 +104,7 @@ export default function DocumentPreview({
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-fg-dim">
         <Loader2 size={16} className="animate-spin text-accent" />
-        正在渲染文档
+        {t(locale, 'doc.rendering')}
       </div>
     );
   }
@@ -112,7 +115,7 @@ export default function DocumentPreview({
         <div className="max-w-md rounded-md border border-status-error/40 bg-status-error/10 p-4 text-sm leading-relaxed text-fg-dim">
           <div className="mb-2 flex items-center gap-2 font-medium text-status-error">
             <FileWarning size={16} />
-            无法渲染文档
+            {t(locale, 'doc.cannotRender')}
           </div>
           {state.message}
         </div>
@@ -126,9 +129,11 @@ export default function DocumentPreview({
         <div className="max-w-md rounded-md border border-border bg-panel-2 p-4 text-sm leading-relaxed text-fg-dim">
           <div className="mb-2 flex items-center gap-2 font-medium text-fg">
             <FileWarning size={16} />
-            暂不支持内嵌预览
+            {t(locale, 'doc.unsupported')}
           </div>
-          该文档格式（{mime}）无法在预览器中直接渲染，请点击右上角用系统默认程序打开。
+          {locale === 'zh-CN'
+            ? `该文档格式（${mime}）无法在预览器中直接渲染，请点击右上角用系统默认程序打开。`
+            : `This document format (${mime}) cannot be rendered inline. Click the top-right button to open it with the default program.`}
         </div>
       </div>
     );

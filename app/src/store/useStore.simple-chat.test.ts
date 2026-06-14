@@ -800,6 +800,85 @@ describe('simple-workflow chat mode', () => {
     expect(assistant?.text).toContain('这是直接的回答。');
   });
 
+  it('keeps simple-chat interaction widgets visible while waiting for input', async () => {
+    resetStore(simpleBlueprint('Simple chat'));
+    mockDirectRoute();
+    const requests: Array<{ system: string; userContent: string }> = [];
+    gatewayMocks.completeGatewayText.mockImplementation(async (request) => {
+      requests.push({
+        system: String(request.system),
+        userContent: String(request.userContent),
+      });
+      if (requests.length === 1) {
+        return [
+          '<<FUC_ASK>>',
+          JSON.stringify({
+            type: 'select',
+            prompt: '要继续连接远程服务器吗？',
+            options: ['继续连接', '先停止'],
+            multi: false,
+          }),
+          '<<FUC_ASK_END>>',
+        ].join('\n');
+      }
+      return '已按你的选择继续处理。';
+    });
+
+    useStore.getState().sendPrompt('帮我配置远程服务器');
+
+    await waitFor(
+      () =>
+        useStore
+          .getState()
+          .messages.some(
+            (message) =>
+              message.interaction?.prompt === '要继续连接远程服务器吗？' &&
+              message.interactionStatus === 'pending',
+          ),
+      'simple chat interaction widget',
+    );
+
+    expect(useStore.getState().waitingInputSessions).toHaveLength(1);
+    const interactionMessage = useStore
+      .getState()
+      .messages.find((message) => message.interaction);
+    expect(interactionMessage?.text).toBe('要继续连接远程服务器吗？');
+    await waitFor(
+      () =>
+        notificationMocks.notifySessionComplete.mock.calls.some(
+          ([input]) => input.status === 'waitingInput',
+        ),
+      'waiting-input notification',
+    );
+    expect(notificationMocks.notifySessionComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'waitingInput',
+        sessionTitle: 'Simple chat',
+        detail: '要继续连接远程服务器吗？',
+      }),
+    );
+
+    useStore.getState().answerInteraction(interactionMessage!.id, {
+      kind: 'select',
+      values: ['继续连接'],
+    });
+
+    await waitFor(
+      () =>
+        !useStore.getState().aiStreaming &&
+        useStore
+          .getState()
+          .messages.some((message) =>
+            message.text.includes('已按你的选择继续处理。'),
+          ),
+      'simple chat final answer after interaction',
+    );
+
+    expect(gatewayMocks.completeGatewayText).toHaveBeenCalledTimes(2);
+    expect(requests[1].userContent).toContain('用户的回答：继续连接');
+    expect(useStore.getState().waitingInputSessions).toHaveLength(0);
+  });
+
   it('injects app personal instructions for Codex simple chat prompts', async () => {
     const workflow = simpleBlueprint('Simple chat');
     workflow.meta.gateway = {
@@ -1553,7 +1632,7 @@ describe('simple-workflow chat mode', () => {
         }),
     );
 
-    useStore.getState().sendPrompt('问题一');
+    expect(useStore.getState().sendPrompt('问题一')).toBe(true);
     await waitFor(() => resolvers.length === 1, 'first chat call');
 
     // Interjection: a follow-up sent mid-stream is accepted immediately (not
@@ -1654,7 +1733,7 @@ describe('simple-workflow chat mode', () => {
       adapter: 'claude-code',
       modelClass: 'opus',
     });
-    useStore.getState().sendPrompt('问题二');
+    expect(useStore.getState().sendPrompt('问题二')).toBe(false);
 
     expect(gatewayMocks.completeGatewayText).toHaveBeenCalledTimes(1);
     expect(
@@ -1668,7 +1747,7 @@ describe('simple-workflow chat mode', () => {
       'first chat to finish',
     );
 
-    useStore.getState().sendPrompt('问题二');
+    expect(useStore.getState().sendPrompt('问题二')).toBe(true);
     await waitFor(() => resolvers.length === 2, 'second chat after finish');
     expect(gatewayMocks.completeGatewayText).toHaveBeenCalledTimes(2);
     expect(useStore.getState().blockedSendTip).toBeNull();
