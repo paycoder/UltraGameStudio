@@ -7,8 +7,10 @@ import {
 } from 'react';
 import {
   AlarmClock,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Download,
   FolderOpen,
   MoreHorizontal,
@@ -60,7 +62,11 @@ import {
   type WorkflowSessionKey,
 } from '@/store/useStore';
 import type { ScheduledTaskConfig, Session } from '@/store/types';
-import type { WorkspaceSummary } from '@/store/history/types';
+import {
+  DEFAULT_WORKSPACE_ID,
+  HISTORY_ROOT_DIR,
+  type WorkspaceSummary,
+} from '@/store/history/types';
 import type { Locale } from '@/lib/i18n';
 import {
   projectHealth,
@@ -410,6 +416,7 @@ export default function Sidebar({
   const sessions = useStore((s) => s.sessions);
   const historyReady = useStore((s) => s.historyReady);
   const historyError = useStore((s) => s.historyError);
+  const historyRootPath = useStore((s) => s.historyRootPath);
   const workspaces = useStore((s) => s.workspaces);
   const sessionTree = useStore((s) => s.sessionTree);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -2204,6 +2211,9 @@ export default function Sidebar({
           x={menu.x}
           y={menu.y}
           locale={locale}
+          sessionId={menu.sessionId}
+          workspaceId={menu.workspaceId ?? activeWorkspaceId}
+          historyRootPath={historyRootPath}
           canFavorite={true}
           isFavorite={menu.favorite}
           canSchedule={menu.favorite}
@@ -2470,6 +2480,9 @@ function SessionContextMenu({
   x,
   y,
   locale,
+  sessionId,
+  workspaceId,
+  historyRootPath,
   canFavorite,
   isFavorite,
   canSchedule,
@@ -2484,6 +2497,9 @@ function SessionContextMenu({
   x: number;
   y: number;
   locale: Locale;
+  sessionId: string;
+  workspaceId: string | null;
+  historyRootPath: string | null;
   canFavorite: boolean;
   isFavorite: boolean;
   canSchedule: boolean;
@@ -2495,6 +2511,46 @@ function SessionContextMenu({
   onDelete: () => void;
   onClose: () => void;
 }) {
+  const [copiedSessionId, setCopiedSessionId] = useState(false);
+
+  const copySessionLocation = useCallback(async () => {
+    const resolvedWorkspaceId = workspaceId ?? DEFAULT_WORKSPACE_ID;
+    const relativePath = `workspaces/${resolvedWorkspaceId}/sessions/${sessionId}.json`;
+    const root =
+      historyRootPath && !historyRootPath.startsWith('localStorage://')
+        ? historyRootPath
+        : HISTORY_ROOT_DIR;
+    const text = [
+      `Session ID: ${sessionId}`,
+      `Workspace ID: ${resolvedWorkspaceId}`,
+      `File: ${root}/${relativePath}`,
+    ].join('\n');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        try {
+          ta.select();
+          document.execCommand('copy');
+        } finally {
+          if (ta.parentNode) ta.parentNode.removeChild(ta);
+        }
+      }
+      setCopiedSessionId(true);
+      window.setTimeout(() => {
+        setCopiedSessionId(false);
+        onClose();
+      }, 1200);
+    } catch {
+      onClose();
+    }
+  }, [historyRootPath, onClose, sessionId, workspaceId]);
+
   return (
     <>
       {/* Backdrop catches the next click anywhere and dismisses the menu. */}
@@ -2557,6 +2613,22 @@ function SessionContextMenu({
             <span>{t(locale, 'sidebar.renameSession')}</span>
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => void copySessionLocation()}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg-dim transition-colors hover:bg-panel-2 hover:text-fg"
+        >
+          {copiedSessionId ? (
+            <Check size={13} className="text-accent-2" />
+          ) : (
+            <Copy size={13} className="text-fg-faint" />
+          )}
+          <span>
+            {copiedSessionId
+              ? t(locale, 'chat.copied')
+              : t(locale, 'sidebar.copySessionLocation')}
+          </span>
+        </button>
         <button
           type="button"
           disabled={deleteDisabledReason != null}

@@ -310,6 +310,7 @@ import {
 } from '@/core/memoryReview';
 import {
   INTERACTION_PROTOCOL,
+  detectFallbackInteraction,
   formatAnswerForPrompt,
   liveProse,
   parseInteraction,
@@ -932,7 +933,7 @@ function adapterFromHistoricalRouteName(
   );
 }
 
-function historicalGatewaySelectionFromMessages(
+export function historicalGatewaySelectionFromMessages(
   messages: readonly Message[],
 ): GatewaySelection | null {
   const route = historicalRouteParts(messages);
@@ -3857,11 +3858,31 @@ async function activateHistorySession(
       : recordWorkflow
         ? runProgressFromSnapshot(workflow, workflow.meta.run ?? null)
         : emptyRunProgress();
+  // The persisted record is the authority, but a retained snapshot can be
+  // either ahead of it (a stream that kept running while another session was on
+  // screen) or behind it (an intermediate commit frozen mid-turn). Arbitrate per
+  // message id by freshness so a stale snapshot can never bury the final answer
+  // that is already on disk, while a fresh snapshot still restores in-flight
+  // text the debounced write has not flushed yet.
   const viewMessages = liveRun
     ? liveRun.messages
     : aiEditSnapshot
-      ? mergeMessagesById(record.messages, aiEditSnapshot.messages)
+      ? mergeMessagesById(record.messages, aiEditSnapshot.messages, newerMessage)
       : record.messages;
+  // Converge the RETAINED snapshot (channel already torn down) onto what we just
+  // rendered. Without this the stale snapshot keeps winning on every later
+  // switch back — it is never otherwise invalidated. Live channels are skipped:
+  // their buffer is still being appended to, and overwriting the array under a
+  // running stream would drop chunks the streamer still holds indices into.
+  if (
+    !liveRun &&
+    aiEditSnapshot &&
+    viewMessages !== aiEditSnapshot.messages &&
+    !activeAiEdits.has(aiEditSnapshot.key)
+  ) {
+    aiEditSnapshot.messages = viewMessages;
+    aiEditSnapshots.set(aiEditSnapshot.key, aiEditSnapshot);
+  }
   const canvasViewport = canvasViewportForSession(
     targetWorkspaceId,
     session.id,
@@ -5045,6 +5066,11 @@ export const useStore = create<StoreState>((set, get) => ({
     const ids = new Set([messageId]);
     const ch = entry.channel;
     pruneAiEditSourcesForDeletion(ch.workspaceId, ch.sessionId, ids);
+    // A queued turn's channel may not be registered in `activeAiEdits` before
+    // its FIFO slot starts, in which case the registry walk above cannot see
+    // it. Prune the entry's own buffer explicitly so its `ownedMessageIds` and
+    // messages stop carrying the deleted id.
+    pruneAiEditSourceMessages(ch, ids);
     let nextMessages: Message[] | null = null;
     let nextWorkflow: IRGraph | null = null;
     let persistWorkflow = false;
@@ -5064,6 +5090,15 @@ export const useStore = create<StoreState>((set, get) => ({
         };
       });
     }
+    // Persist AFTER the message leaves the view. `persistQueuedChatConversation`
+    // rebuilds the written list through `mergeAiEditChatMessages`, whose merge
+    // base is the visible `store.messages`; persisting first would merge the
+    // just-deleted message straight back into the disk record, and switching to
+    // another session and back would then resurrect it. Always persist (not only
+    // when the session is visible): the conditional `persistCurrentConversation`
+    // below is skipped for background sessions, and without this call the
+    // deletion never reaches disk.
+    persistQueuedChatConversation(ch);
     if (nextMessages) {
       void persistCurrentConversation(
         nextMessages,
@@ -5108,6 +5143,13 @@ export const useStore = create<StoreState>((set, get) => ({
     // /image one-shot command in AIDock), never inferred from message text here.
     // sendPrompt always means AI editing / workflow authoring.
     const aiEditingSession = activeWorkflowSessionKey(state);
+    // A fresh user message on a session means "I'm answering you with a new
+    // turn, not by clicking the widget". Cancel any parked interaction for
+    // THIS session so the previous chat turn's `awaitInteraction` resolves
+    // null immediately and releases the per-session FIFO — otherwise the new
+    // turn would queue behind an await that never resolves, which is exactly
+    // the "sent it and nothing happened" stall.
+    cancelParkedInteractionsForSession(aiEditingSession);
     const gatewaySelection = workflowDefaultGatewaySelection(
       state.workflow,
       state.composer.model,
@@ -6520,15 +6562,18 @@ ${previousReply.slice(0, 4000)}
               }
               // Preserve any tool-call sentinels the CLI streamed this round so
               // the session-files list keeps the files this turn read/edited.
-              // Also strip the protocol blocks (memory/recall/gen) from this
+              // Also strip the protocol blocks (memory/recall/gen/ask) from this
               // buffer: finalChatBodyWithStreamedTools can resurrect `live` over
               // the stripped `finalProse` when the stream captured more text than
               // the CLI's terminal result, which would re-inject the raw
-              // <<UGS_MEMORY>>/<<UGS_RECALL>>/<<UGS_GEN>> JSON into the bubble.
+              // <<UGS_MEMORY>>/<<UGS_RECALL>>/<<UGS_GEN>>/<<UGS_ASK>> JSON into
+              // the bubble.
               latestCliLive = stripGenRequests(
                 stripRecall(
                   stripMemoryWrites(
-                    legacyXmlToolsToSentinels(live, { streamingTail: true }),
+                    stripInteraction(
+                      legacyXmlToolsToSentinels(live, { streamingTail: true }),
+                    ),
                   ),
                 ),
               );
@@ -6723,7 +6768,17 @@ ${previousReply.slice(0, 4000)}
                 continue;
               }
             }
-            const req = parseInteraction(answer);
+            let req = parseInteraction(answer);
+            if (!req) {
+              // Protocol fallback: the model asked a question as plain text
+              // instead of emitting `<<UGS_ASK>>`. Synthesize a widget from the
+              // question-shaped tail so the user still gets clickable options
+              // (or at minimum an input box) instead of a bubble that ends in
+              // "?" while the turn stays parked on `awaitInteraction`.
+              // `allowInput: true` on the synthesized select gives the user an
+              // escape hatch if the heuristic misfires.
+              req = detectFallbackInteraction(stripCliProgressMarkers(answer));
+            }
             if (!req) {
               finalAnswer = answer;
               break;
@@ -7690,36 +7745,48 @@ async function trySteerQueuedCliTurn(entry: ChatTurnQueueEntry): Promise<boolean
       (message) => message.id === entry.messageId,
     );
     if (userMessage) {
-      // 插话已注入正在运行的这一轮，它属于本轮输入，所以要显示在本轮回复气泡
-      // 之前。否则后续流式内容继续写进它上方那个气泡，插话会被永久压在会话最
-      // 底部（时间条之上、操作按钮之下），看起来像还没发出去。
+      // 插话显示在「当前正在流式的那条 assistant 气泡」正上方——
+      // 用户视觉上看到的是"我打断了这条回复"。
+      // 定位方式：running.channel.messages 里第一条未完成的 assistant。
       const interjection: Message = { ...userMessage, interjected: true };
-      const firstReplyId = running.channel.messages.find(
-        (message) =>
-          message.role === 'assistant' &&
-          running.channel.ownedMessageIds?.has(message.id),
-      )?.id;
-      const placeInterjection = (list: Message[]): Message[] => {
-        const rest = list.filter((message) => message.id !== interjection.id);
-        const at = firstReplyId
-          ? rest.findIndex((message) => message.id === firstReplyId)
-          : -1;
-        if (at < 0) return [...rest, interjection];
-        return [...rest.slice(0, at), interjection, ...rest.slice(at)];
-      };
       running.channel.ownedMessageIds?.add(interjection.id);
-      running.channel.messages = placeInterjection(running.channel.messages);
+      const nextMessages = running.channel.messages.filter(
+        (message) => message.id !== interjection.id,
+      );
+      // Index must be found AFTER the filter, otherwise a removal before the
+      // target shifts everything by one.
+      const streamTargetIdx = nextMessages.findIndex(
+        (message) => message.role === 'assistant' && !message.completedAt,
+      );
+      if (streamTargetIdx >= 0) {
+        nextMessages.splice(streamTargetIdx, 0, interjection);
+      } else {
+        nextMessages.push(interjection);
+      }
+      running.channel.messages = nextMessages;
       running.channel.workflow = simpleWorkflowFromMessages(
         running.channel.workflow,
         running.channel.messages,
       );
-      // The visible list is the merge base, so it needs the same order — merging
-      // preserves `base` positions and would otherwise pull the interjection
-      // back to the tail on the next streaming commit.
+      // The visible list is the merge base, so it needs the same reposition;
+      // merging preserves `base` positions and would otherwise keep the old
+      // copy at its original slot on the next commit.
       if (aiEditViewActive(running.channel)) {
-        useStore.setState((state) => ({
-          messages: placeInterjection(state.messages),
-        }));
+        useStore.setState((state) => {
+          const filtered = state.messages.filter(
+            (message) => message.id !== interjection.id,
+          );
+          const globalStreamTargetIdx = filtered.findIndex(
+            (message) =>
+              message.role === 'assistant' && !message.completedAt,
+          );
+          if (globalStreamTargetIdx >= 0) {
+            filtered.splice(globalStreamTargetIdx, 0, interjection);
+          } else {
+            filtered.push(interjection);
+          }
+          return { messages: filtered };
+        });
       }
       // Keep the active assistant bubble streaming. The user message was
       // already appended to durable history by sendPrompt; persisting this
@@ -8325,12 +8392,44 @@ function aiEditOwnedMessages(ch: AiEditChannel): Message[] {
   return ch.messages.filter((message) => ch.ownedMessageIds?.has(message.id));
 }
 
-export function mergeMessagesById(base: Message[], updates: Message[]): Message[] {
+/**
+ * Wall-clock freshness of a message: the completion stamp when the turn
+ * finished, otherwise its creation stamp. Used to decide which of two copies of
+ * the SAME message id (persisted record vs retained channel snapshot) is the
+ * newer one — a mid-stream commit stamps an early `completedAt`, the final
+ * answer stamps a later one, and a still-streaming reply carries none.
+ */
+export function messageFreshness(message: Message): number {
+  return message.completedAt ?? message.createdAt;
+}
+
+/**
+ * Conflict resolver for {@link mergeMessagesById}: keep whichever copy of the
+ * message id is fresher, preferring `base` when both agree (equal stamps mean
+ * no information either way, and the persisted record is the authority).
+ */
+export function newerMessage(base: Message, update: Message): Message {
+  return messageFreshness(update) > messageFreshness(base) ? update : base;
+}
+
+/**
+ * Merge by id, preserving `base` ordering. `resolve` arbitrates when both sides
+ * carry the same id; without it the `updates` copy wins (in-place edit).
+ */
+export function mergeMessagesById(
+  base: Message[],
+  updates: Message[],
+  resolve?: (baseMessage: Message, updateMessage: Message) => Message,
+): Message[] {
   if (updates.length === 0) return base;
   const byId = new Map(updates.map((message) => [message.id, message]));
   // Apply in-place updates first, preserving `base` ordering for messages that
   // already exist (e.g. live streaming edits to an assistant bubble).
-  const merged = base.map((message) => byId.get(message.id) ?? message);
+  const merged = base.map((message) => {
+    const update = byId.get(message.id);
+    if (!update) return message;
+    return resolve ? resolve(message, update) : update;
+  });
   const indexOfId = new Map(merged.map((message, index) => [message.id, index]));
   // Insert brand-new messages at the position implied by the `updates` order
   // rather than blindly at the tail. A turn's owned messages are ordered
@@ -8358,9 +8457,37 @@ export function mergeMessagesById(base: Message[], updates: Message[]): Message[
   return merged;
 }
 
+/**
+ * Merge base for a background (non-viewed) AI-edit channel.
+ *
+ * Deliberately NON-monotonic sources are banned here. `aiEditSnapshots` is
+ * written on EVERY commit (`rememberAiEditSnapshot`) and never invalidated, so
+ * a snapshot can be OLDER than the conversation: an interjection commits the
+ * still-running reply, freezing that mid-stream text into the snapshot, and the
+ * final answer only lands on disk afterwards. Using the snapshot as the base
+ * then rolls the channel back — and because the rolled-back buffer is what
+ * `persistAiEditMessages` writes out (750 ms debounce), the rollback reaches
+ * disk too. That is exactly "switch away, switch back: the final answer is gone
+ * and an already-dropped mid-stream copy is back".
+ *
+ * The channel's own buffer only ever grows forward, so it is the base whenever
+ * it has anything; the snapshot is a bootstrap fallback for a channel that has
+ * not produced a single message yet.
+ */
+export function aiEditMergeBaseMessages(
+  channelMessages: Message[],
+  snapshotMessages: Message[] | undefined,
+): Message[] {
+  if (channelMessages.length > 0) return channelMessages;
+  return snapshotMessages ?? channelMessages;
+}
+
 function aiEditBaseMessages(ch: AiEditChannel): Message[] {
   if (aiEditViewActive(ch)) return useStore.getState().messages;
-  return getAiEditSnapshot(ch.workspaceId, ch.sessionId)?.messages ?? ch.messages;
+  return aiEditMergeBaseMessages(
+    ch.messages,
+    getAiEditSnapshot(ch.workspaceId, ch.sessionId)?.messages,
+  );
 }
 
 function mergeAiEditChatMessages(ch: AiEditChannel): Message[] {
@@ -8376,6 +8503,10 @@ function startInputsFromWorkflow(workflow: IRGraph): string[] {
 
 function aiEditBaseWorkflow(ch: AiEditChannel): IRGraph {
   if (aiEditViewActive(ch)) return useStore.getState().workflow;
+  // Same monotonic-source rule as `aiEditBaseMessages`: once the channel has
+  // produced anything, its own workflow wins over the retained snapshot, which
+  // may predate it.
+  if (ch.messages.length > 0) return ch.workflow;
   return getAiEditSnapshot(ch.workspaceId, ch.sessionId)?.workflow ?? ch.workflow;
 }
 
@@ -9196,6 +9327,51 @@ function resolvePendingAiEditInteractions(ch: AiEditChannel | null): void {
       : m;
   ch.messages = ch.messages.map(mark);
   aiEditCommitMessages(ch, true);
+}
+
+/**
+ * New user message arrived on a session: cancel every parked interaction for
+ * that session so the previous chat turn's `awaitInteraction` resolves null
+ * immediately and unwinds through its `finally`, releasing the per-session
+ * FIFO (`enqueueChatTurn`) for the new turn. Without this, a user who replies
+ * by typing a fresh message instead of clicking the widget would queue behind
+ * an await that never resolves — the visible "send it and nothing happens".
+ *
+ * Only cancels entries whose sessionKey matches; widgets on OTHER sessions are
+ * left alone so the user can still answer them after switching back. Pending
+ * widgets are marked cancelled on the channel so they stop looking clickable.
+ */
+function cancelParkedInteractionsForSession(
+  sessionKey: WorkflowSessionKey | null,
+): void {
+  if (!sessionKey) return;
+  const targetId = workflowSessionKeyId(sessionKey);
+  const settledSessionKeys: Array<WorkflowSessionKey | null> = [];
+  const cancelledMessageIds = new Set<string>();
+  for (const [id, entry] of [...pendingInteractionResolvers]) {
+    if (!entry.sessionKey) continue;
+    if (workflowSessionKeyId(entry.sessionKey) !== targetId) continue;
+    pendingInteractionResolvers.delete(id);
+    settledSessionKeys.push(entry.sessionKey);
+    cancelledMessageIds.add(id);
+    entry.resolve(null);
+  }
+  if (cancelledMessageIds.size === 0) return;
+  syncWaitingInputSessions();
+  dismissSettledWaitingInputNotifications(settledSessionKeys);
+  // Mark the parked widgets cancelled in any ai-edit channel that owns them so
+  // the user sees "交互已取消" instead of a dead-clickable widget. We scan the
+  // session's channels rather than track a single owner because the same
+  // session can be rendered by multiple channels across reconnects.
+  for (const ch of getAiEditChannelsForSession(sessionKey.workspaceId, sessionKey.sessionId)) {
+    if (!ch.messages.some((m) => cancelledMessageIds.has(m.id))) continue;
+    ch.messages = ch.messages.map((m) =>
+      cancelledMessageIds.has(m.id) && m.interaction && m.interactionStatus === 'pending'
+        ? { ...m, interactionStatus: 'cancelled' }
+        : m,
+    );
+    aiEditCommitMessages(ch, true);
+  }
 }
 
 /** Append a system log line to the message stream (routed through the run channel). */

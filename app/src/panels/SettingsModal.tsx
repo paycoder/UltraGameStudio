@@ -1601,6 +1601,23 @@ function GeneralSettings({
             onChange={(v) => patchAutosaveConfig({ enabled: v })}
           />
         </SettingRow>
+        <SettingRow
+          title={t(locale, 'settings.autosave.nameLabel')}
+          description={t(locale, 'settings.autosave.nameHint')}
+        >
+          <div className="w-full min-w-[14rem]">
+            <input
+              type="text"
+              value={autosaveConfig.name}
+              onChange={(event) => patchAutosaveConfig({ name: event.target.value })}
+              placeholder={t(locale, 'settings.autosave.namePlaceholder')}
+              maxLength={64}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded border border-border bg-bg px-2 py-1.5 text-xs text-fg outline-none transition-colors placeholder:text-fg-faint focus:border-accent"
+            />
+          </div>
+        </SettingRow>
         {autosaveConfig.enabled && (
           <>
             <SettingRow

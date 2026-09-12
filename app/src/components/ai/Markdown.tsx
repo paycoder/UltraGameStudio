@@ -38,6 +38,7 @@ import Callout from './Callout';
 import { detectCallout, stripCalloutMarker } from './lib/callout';
 import {
   FileChipLimitNotice,
+  FoldedFileChip,
   VisibleFileChip,
   type OpenFileFn,
 } from './FileChip';
@@ -215,7 +216,22 @@ function MarkdownImpl({
     if (slot === 'notice') {
       return { node: <FileChipLimitNotice key={key} />, hidden: false };
     }
-    if (slot === 'hidden') return { node: null, hidden: true };
+    if (slot === 'hidden') {
+      // 折叠只该省掉装饰，不该省掉可点击性：AI 交付物（生成的 HTML/MD 报告）
+      // 常常正是一条长回复里最靠后的那批引用，落到这里就变成不可点的死文本。
+      // 渲染为无装饰但仍可打开的链接，保证「AI 输出的文件路径都能点」。
+      return {
+        node: (
+          <FoldedFileChip
+            key={key}
+            refData={refData}
+            onOpenFile={onOpenFile}
+            cwd={cwd}
+          />
+        ),
+        hidden: false,
+      };
+    }
     return {
       node: (
         <VisibleFileChip

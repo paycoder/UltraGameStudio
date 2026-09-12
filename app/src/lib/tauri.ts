@@ -203,12 +203,37 @@ export interface LocalModelHardware {
 export interface LocalFilePreview {
   path: string;
   fileName: string;
-  kind: 'text' | 'image' | 'video' | 'binary' | 'document';
+  kind: 'text' | 'image' | 'video' | 'binary' | 'document' | 'office';
   mime?: string | null;
   sizeBytes: number;
   truncated: boolean;
   text?: string | null;
   base64?: string | null;
+  /** Absolute path to hand to `convertFileSrc` when the preview streams the
+   *  file itself instead of inlining bytes (image / video / PDF / Office / HTML).
+   *  Absent only for small inline payloads such as SVG. */
+  streamPath?: string | null;
+  /** Slide (PPTX) or sheet (XLSX) count for paged formats. */
+  pageCount?: number | null;
+}
+
+export interface OfficePreviewPage {
+  index: number;
+  html: string;
+}
+
+export interface OfficePreview {
+  kind: string;
+  pageCount: number;
+  pages: OfficePreviewPage[];
+  truncated: boolean;
+}
+
+export interface ImageThumbnail {
+  base64: string;
+  mime: string;
+  width: number;
+  height: number;
 }
 
 export interface KnowledgeBaseScanSource {
@@ -1637,6 +1662,40 @@ export async function previewLocalFile(
   return invoke<LocalFilePreview>('preview_local_file', {
     path,
     cwd: opts?.cwd ?? null,
+  });
+}
+
+/** Paged read of a PPTX/XLSX. Only the leading `maxPages` slides/sheets are
+ *  parsed, so preview cost stays flat regardless of document length. */
+export async function previewOfficeDocument(
+  path: string,
+  opts?: { cwd?: string; maxPages?: number },
+): Promise<OfficePreview> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<OfficePreview>('preview_office_document', {
+    path,
+    cwd: opts?.cwd ?? null,
+    maxPages: opts?.maxPages ?? null,
+  });
+}
+
+/** Downscaled JPEG for chat thumbnails. Decoding stops at `maxEdge` pixels, so
+ *  a multi-megabyte screenshot never reaches the renderer at full size. */
+export async function readImageThumbnail(
+  path: string,
+  opts?: { cwd?: string; maxEdge?: number },
+): Promise<ImageThumbnail> {
+  if (!tauriAvailable()) {
+    throw new Error('NO_BACKEND');
+  }
+  const invoke = await getInvoke();
+  return invoke<ImageThumbnail>('read_image_thumbnail', {
+    path,
+    cwd: opts?.cwd ?? null,
+    maxEdge: opts?.maxEdge ?? null,
   });
 }
 

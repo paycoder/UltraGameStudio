@@ -312,6 +312,7 @@ const UI_FULL = {
     'sidebar.scheduleTask': '设置定时运行',
     'sidebar.scheduleBadge': '已设置定时运行',
     'sidebar.renameSession': '重命名',
+    'sidebar.copySessionLocation': '拷贝会话位置',
     'sidebar.renameSave': '保存',
     'sidebar.renameCancel': '取消',
     'sidebar.renameErrorEmpty': '名称不能为空',
@@ -733,6 +734,10 @@ const UI_FULL = {
     'doc.cannotRender': '无法渲染文档',
     'doc.unsupported': '暂不支持内嵌预览',
     'doc.decodeFailed': '文档内容解码失败。',
+    'doc.pageOf': '第 {current} / {total} 页',
+    'doc.prevPage': '上一页',
+    'doc.nextPage': '下一页',
+    'doc.truncatedPages': '仅显示前 {shown} 页，共 {total} 页',
     'comfy.parseFailed': 'ComfyUI 图解析失败',
     'comfy.nodes': '节点',
     'comfy.edges': '连线',
@@ -1614,6 +1619,10 @@ const UI_FULL = {
       '定期把会提交到 Git/SVN/Perforce 的改动代码快照到工作区 .ultragamestudio/autosave/，防止多个 agent 同时改文件时互相覆盖或误删后无法恢复。',
     'settings.autosave.enabledLabel': '启用自动备份',
     'settings.autosave.enabledHint': '关闭后不再定时备份，仍可手动立即备份。',
+    'settings.autosave.nameLabel': '备份名称',
+    'settings.autosave.nameHint':
+      '可选。填入后快照目录名会带这个前缀（例如「重构前-1788764421216」），方便在 .ultragamestudio/autosave/ 里快速辨认。',
+    'settings.autosave.namePlaceholder': '例如：主线重构、发布前快照',
     'settings.autosave.intervalLabel': '备份间隔（分钟）',
     'settings.autosave.intervalHint': '每隔这个时长扫描一次工作区，备份有改动的版本库文件。',
     'settings.autosave.retentionLabel': '保留天数',
@@ -1811,6 +1820,7 @@ const UI_FULL = {
     'interaction.answered': '已回答',
     'interaction.cancelled': '交互已取消',
     'interaction.ended': '运行已结束，回答将作为新一轮消息发送',
+    'interaction.waitingHint': '正在等你回复；也可以直接发新消息跳过此问题并继续。',
     'interaction.skip': '跳过',
     'interaction.skipTitle': '跳过这个问题，不作回答',
     'defaultBlueprint.agentPlaceholder': '描述你的第一个步骤',
@@ -1900,6 +1910,7 @@ const UI_FULL = {
     'sidebar.scheduleTask': 'Schedule run',
     'sidebar.scheduleBadge': 'Scheduled run',
     'sidebar.renameSession': 'Rename',
+    'sidebar.copySessionLocation': 'Copy session location',
     'sidebar.renameSave': 'Save',
     'sidebar.renameCancel': 'Cancel',
     'sidebar.renameErrorEmpty': 'Name cannot be empty',
@@ -2290,6 +2301,10 @@ const UI_FULL = {
     'doc.cannotRender': 'Cannot render document',
     'doc.unsupported': 'Inline preview not supported',
     'doc.decodeFailed': 'Failed to decode document content.',
+    'doc.pageOf': 'Page {current} of {total}',
+    'doc.prevPage': 'Previous page',
+    'doc.nextPage': 'Next page',
+    'doc.truncatedPages': 'Showing first {shown} of {total} pages',
     'comfy.parseFailed': 'Failed to parse ComfyUI graph',
     'comfy.nodes': 'nodes',
     'comfy.edges': 'edges',
@@ -3177,6 +3192,10 @@ const UI_FULL = {
     'settings.autosave.enabledLabel': 'Enable automatic backup',
     'settings.autosave.enabledHint':
       'When off, backups never run automatically; you can still back up now manually.',
+    'settings.autosave.nameLabel': 'Backup name',
+    'settings.autosave.nameHint':
+      'Optional. Snapshot folders get this prefix (e.g. "pre-refactor-1788764421216") so you can spot them in .ultragamestudio/autosave/.',
+    'settings.autosave.namePlaceholder': 'e.g. main refactor, pre-release',
     'settings.autosave.intervalLabel': 'Interval (minutes)',
     'settings.autosave.intervalHint':
       'Scan workspaces and snapshot changed VCS files this often.',
@@ -3376,6 +3395,7 @@ const UI_FULL = {
     'interaction.answered': 'Answered',
     'interaction.cancelled': 'Interaction cancelled',
     'interaction.ended': 'Run ended — your answer will be sent as a new message',
+    'interaction.waitingHint': 'Waiting for your reply — or just send a new message to skip this question and continue.',
     'interaction.skip': 'Skip',
     'interaction.skipTitle': 'Skip this question without answering',
     'defaultBlueprint.agentPlaceholder': 'Describe your first step',
@@ -3812,6 +3832,7 @@ const UI_FULL = {
     'interaction.answered': 'Respondido',
     'interaction.cancelled': 'Interacción cancelada',
     'interaction.ended': 'La ejecución terminó: tu respuesta se enviará como un nuevo mensaje',
+    'interaction.waitingHint': 'Esperando tu respuesta; también puedes enviar un mensaje nuevo para saltar esta pregunta y continuar.',
     'interaction.skip': 'Omitir',
     'interaction.skipTitle': 'Omitir esta pregunta sin responder',
     'defaultBlueprint.agentPlaceholder': 'Describe tu primer paso',
@@ -4247,6 +4268,7 @@ const UI_FULL = {
     'interaction.answered': 'Répondu',
     'interaction.cancelled': 'Interaction annulée',
     'interaction.ended': 'Exécution terminée — votre réponse sera envoyée comme un nouveau message',
+    'interaction.waitingHint': 'En attente de votre réponse ; vous pouvez aussi envoyer un nouveau message pour sauter cette question et continuer.',
     'interaction.skip': 'Ignorer',
     'interaction.skipTitle': 'Ignorer cette question sans répondre',
     'defaultBlueprint.agentPlaceholder': 'Decris ta premiere etape',
@@ -4682,6 +4704,7 @@ const UI_FULL = {
     'interaction.answered': 'Отвечено',
     'interaction.cancelled': 'Взаимодействие отменено',
     'interaction.ended': 'Выполнение завершено — ответ будет отправлен как новое сообщение',
+    'interaction.waitingHint': 'Ожидание ответа; можно также просто отправить новое сообщение, чтобы пропустить вопрос и продолжить.',
     'interaction.skip': 'Пропустить',
     'interaction.skipTitle': 'Пропустить этот вопрос без ответа',
     'defaultBlueprint.agentPlaceholder': 'Опишите первый шаг',
@@ -5117,6 +5140,7 @@ const UI_FULL = {
     'interaction.answered': 'تم الإجابة',
     'interaction.cancelled': 'تم إلغاء التفاعل',
     'interaction.ended': 'انتهى التشغيل — سيتم إرسال إجابتك كرسالة جديدة',
+    'interaction.waitingHint': 'بانتظار ردّك؛ يمكنك أيضًا إرسال رسالة جديدة لتخطّي هذا السؤال والمتابعة.',
     'interaction.skip': 'تخطي',
     'interaction.skipTitle': 'تخطي هذا السؤال دون إجابة',
     'defaultBlueprint.agentPlaceholder': 'صف خطوتك الأولى',
@@ -5552,6 +5576,7 @@ const UI_FULL = {
     'interaction.answered': 'उत्तर दिया',
     'interaction.cancelled': 'इंटरैक्शन रद्द किया गया',
     'interaction.ended': 'चलना समाप्त — आपका उत्तर एक नए संदेश के रूप में भेजा जाएगा',
+    'interaction.waitingHint': 'आपके उत्तर की प्रतीक्षा है; इस प्रश्न को छोड़कर जारी रखने के लिए नया संदेश भी भेज सकते हैं।',
     'interaction.skip': 'छोड़ें',
     'interaction.skipTitle': 'इस प्रश्न को बिना उत्तर दिए छोड़ें',
     'defaultBlueprint.agentPlaceholder': 'अपना पहला चरण बताएं',
@@ -5987,6 +6012,7 @@ const UI_FULL = {
     'interaction.answered': '回答済み',
     'interaction.cancelled': 'インタラクションをキャンセルしました',
     'interaction.ended': '実行は終了しましたが、回答は新しいメッセージとして送信されます',
+    'interaction.waitingHint': '返信を待っています。新しいメッセージを送ればこの質問をスキップして続行できます。',
     'interaction.skip': 'スキップ',
     'interaction.skipTitle': 'この質問に回答せずスキップ',
     'defaultBlueprint.agentPlaceholder': '最初のステップを説明',
@@ -6422,6 +6448,7 @@ const UI_FULL = {
     'interaction.answered': 'Respondido',
     'interaction.cancelled': 'Interação cancelada',
     'interaction.ended': 'A execução terminou — a sua resposta será enviada como uma nova mensagem',
+    'interaction.waitingHint': 'À espera da sua resposta; também pode enviar uma nova mensagem para saltar esta pergunta e continuar.',
     'interaction.skip': 'Ignorar',
     'interaction.skipTitle': 'Ignorar esta pergunta sem responder',
     'defaultBlueprint.agentPlaceholder': 'Descreva seu primeiro passo',
@@ -6857,6 +6884,7 @@ const UI_FULL = {
     'interaction.answered': 'Beantwortet',
     'interaction.cancelled': 'Interaktion abgebrochen',
     'interaction.ended': 'Durchlauf beendet — deine Antwort wird als neue Nachricht gesendet',
+    'interaction.waitingHint': 'Warte auf deine Antwort; du kannst auch einfach eine neue Nachricht senden, um diese Frage zu überspringen und fortzufahren.',
     'interaction.skip': 'Überspringen',
     'interaction.skipTitle': 'Diese Frage ohne Antwort überspringen',
     'defaultBlueprint.agentPlaceholder': 'Beschreibe deinen ersten Schritt',
@@ -6947,6 +6975,19 @@ export function isRtlLocale(locale: Locale): boolean {
 export function t(locale: Locale, key: TranslationKey): string {
   const map = UI as unknown as Record<string, Record<string, string>>;
   return map[locale]?.[key] ?? map[DEFAULT_LOCALE]?.[key] ?? key;
+}
+
+/** `t` with `{name}` placeholders substituted, e.g. `tArgs(locale, 'doc.pageOf', { current: 2, total: 9 })`. */
+export function tArgs(
+  locale: Locale,
+  key: TranslationKey,
+  args: Record<string, string | number>,
+): string {
+  let text = t(locale, key);
+  for (const [name, value] of Object.entries(args)) {
+    text = text.split(`{${name}}`).join(String(value));
+  }
+  return text;
 }
 
 export function localeAiName(locale: Locale): string {

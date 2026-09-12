@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import FilePreviewDrawer from './FilePreviewDrawer';
+import FilePreviewDrawer, { rewriteLocalAssetsInHtml } from './FilePreviewDrawer';
 import { previewLocalFile, workspaceFileDiff } from '@/lib/tauri';
 
 vi.mock('@/lib/tauri', async (importOriginal) => ({
@@ -409,3 +409,60 @@ describe('FilePreviewDrawer', () => {
     expect(container.querySelector('.ai-file-preview-diff__minimap')).not.toBeNull();
   });
 });
+
+describe('rewriteLocalAssetsInHtml', () => {
+  it('converts Windows absolute paths inside src/srcset/href to asset URLs', () => {
+    const html =
+      '<img src="E:\\UltraGameStudio\\.ultragamestudio\\clipboard-images\\pasted-1.png">' +
+      '<source srcset="E:/x/a.png 1x, E:/x/a@2x.png 2x">' +
+      '<a href="E:\\x\\doc.pdf">link</a>';
+    const out = rewriteLocalAssetsInHtml(html, '');
+    expect(out).toContain(
+      `http://asset.localhost/${encodeURIComponent(
+        'E:\\UltraGameStudio\\.ultragamestudio\\clipboard-images\\pasted-1.png',
+      )}`,
+    );
+    expect(out).toContain(
+      `http://asset.localhost/${encodeURIComponent('E:/x/a.png')} 1x`,
+    );
+    expect(out).toContain(
+      `http://asset.localhost/${encodeURIComponent('E:/x/a@2x.png')} 2x`,
+    );
+    expect(out).toContain(
+      `http://asset.localhost/${encodeURIComponent('E:\\x\\doc.pdf')}`,
+    );
+  });
+
+  it('resolves relative paths against baseDir', () => {
+    const out = rewriteLocalAssetsInHtml(
+      '<img src="./img/pic.png">',
+      'E:\\site',
+    );
+    expect(out).toContain(
+      `http://asset.localhost/${encodeURIComponent('E:\\site\\img\\pic.png')}`,
+    );
+  });
+
+  it('leaves network/data URLs untouched', () => {
+    const html =
+      '<img src="https://cdn/x.png"><img src="data:image/png;base64,AAAA">';
+    expect(rewriteLocalAssetsInHtml(html, '')).toBe(html);
+  });
+
+  it('rewrites CSS url() values', () => {
+    const out = rewriteLocalAssetsInHtml(
+      '<style>.a{background:url(E:\\x\\bg.png)}</style>',
+      '',
+    );
+    expect(out).toContain(
+      `url("http://asset.localhost/${encodeURIComponent('E:\\x\\bg.png')}")`,
+    );
+  });
+
+  it('does not mistake a drive letter for a scheme', () => {
+    const out = rewriteLocalAssetsInHtml('<img src="E:\\a\\b.png">', '');
+    expect(out).not.toContain('src="E:\\a\\b.png"');
+    expect(out).toContain('asset.localhost');
+  });
+});
+

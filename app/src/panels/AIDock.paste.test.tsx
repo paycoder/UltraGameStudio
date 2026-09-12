@@ -495,10 +495,14 @@ describe('AIDock pasted clipboard images', () => {
         '[data-testid="composer-file-refs"]',
       );
       expect(strip).not.toBeNull();
+      // Image refs render as a pair: a clickable thumbnail card plus the
+      // always-visible path chip (UGS requirement — the path text must stay
+      // clickable even when a thumbnail is shown).
       expect(
         strip!.querySelectorAll('.ai-file-chip, .ai-file-chip-thumb'),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       expect(strip!.querySelector('.ai-file-chip-thumb')).not.toBeNull();
+      expect(strip!.querySelector('.ai-file-chip')).not.toBeNull();
       expect(strip!.textContent).not.toContain('App.tsx');
       expect(strip!.textContent).not.toContain('notes.txt');
     } finally {

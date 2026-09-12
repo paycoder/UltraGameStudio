@@ -234,7 +234,7 @@ import {
   cleanMessageText,
   renderMessageText,
   routeLabelFromText,
-  timingLineFromText,
+  turnTimingFromMessage,
 } from "@/components/ai/lib/messageText";
 import { translatePublicText } from "@/lib/publicTranslation";
 import { captureConversation } from "@/lib/sessionScreenshot";
@@ -293,6 +293,7 @@ import {
   isImageFileRef,
 } from "@/components/ai/lib/filePath";
 import { scanFileRefs } from "@/components/ai/lib/fileScan";
+import { orderDisplayMessages } from "@/components/ai/lib/orderDisplayMessages";
 import FileChip, {
   FileChipBudgetProvider,
   type OpenFileIntent,
@@ -1541,6 +1542,11 @@ function InteractionWidget({
           {req.type === "select" && (
             <div className="mt-1 text-xs leading-5 text-fg-faint">
               {interactionOptionCountLabel(locale, req.options?.length ?? 0)}
+            </div>
+          )}
+          {active && (
+            <div className="mt-1 font-mono text-[10px] leading-4 text-fg-faint">
+              {t(locale, "interaction.waitingHint")}
             </div>
           )}
         </div>
@@ -4298,15 +4304,6 @@ export default function AIDock({
     }
     return null;
   }, [messages]);
-  // The leading `⏱ …` line of the latest assistant turn, hoisted out of the
-  // bubble so it can sit at the very bottom of the stream. It tracks the turn's
-  // live clock because the streaming path keeps rewriting that line in the
-  // message text while the turn is running.
-  const lastAssistantTiming = useMemo(() => {
-    if (!lastAssistantId) return "";
-    const message = messages.find((m) => m.id === lastAssistantId);
-    return message ? timingLineFromText(message.text) : "";
-  }, [lastAssistantId, messages]);
   // The tail of the list is what's visible at the bottom on session switch, so
   // those messages render their (expensive) markdown eagerly to keep the initial
   // view correct and scroll-to-bottom precise. Everything above upgrades lazily
@@ -4325,15 +4322,24 @@ export default function AIDock({
   }, [messages]);
   const renderFullMessageList =
     forceEagerCapture || normalizedSearch.length > 0;
+  // Display-only chronological ordering. The store keeps messages merged by
+  // turn (an in-flight reply lands right after its own prompt, even if a later
+  // user message was appended first), so the raw array can be out of
+  // `createdAt` order. Sort a copy here; the store array and the LLM-facing
+  // history are untouched. Sort is skipped when the array is already monotonic
+  // so steady-state rendering stays O(n). Interjected ("插话") messages are the
+  // one exception: they keep their store position (just above the reply they
+  // interrupted) instead of being re-sorted by their send-time createdAt.
+  const displayMessages = useMemo(() => orderDisplayMessages(messages), [messages]);
   const scrollSnapshotForWindow =
     streamScrollSnapshotsRef.current.get(activeStreamScrollKey);
   const anchorMessageIndex = scrollSnapshotForWindow?.anchorMessageId
-    ? messages.findIndex(
+    ? displayMessages.findIndex(
         (message) => message.id === scrollSnapshotForWindow.anchorMessageId,
       )
     : -1;
   const anchorMessageWindowSize =
-    anchorMessageIndex >= 0 ? messages.length - anchorMessageIndex : 0;
+    anchorMessageIndex >= 0 ? displayMessages.length - anchorMessageIndex : 0;
   const savedMessageWindowSize =
     messageWindowSizesRef.current.get(activeStreamScrollKey) ??
     INITIAL_MESSAGE_WINDOW;
@@ -4342,7 +4348,7 @@ export default function AIDock({
       ? messageWindow.size
       : savedMessageWindowSize;
   const effectiveMessageWindowSize = Math.min(
-    messages.length,
+    displayMessages.length,
     Math.max(
       INITIAL_MESSAGE_WINDOW,
       storedMessageWindowSize,
@@ -4350,18 +4356,18 @@ export default function AIDock({
     ),
   );
   const visibleMessageCount = renderFullMessageList
-    ? messages.length
+    ? displayMessages.length
     : effectiveMessageWindowSize;
   const hiddenMessageCount = Math.max(
     0,
-    messages.length - visibleMessageCount,
+    displayMessages.length - visibleMessageCount,
   );
   const visibleMessages = useMemo(
     () =>
       hiddenMessageCount > 0
-        ? messages.slice(hiddenMessageCount)
-        : messages,
-    [hiddenMessageCount, messages],
+        ? displayMessages.slice(hiddenMessageCount)
+        : displayMessages,
+    [hiddenMessageCount, displayMessages],
   );
   const queuedChatMessageIdSet = useMemo(
     () => new Set(queuedChatMessageIds),
@@ -4957,11 +4963,19 @@ export default function AIDock({
     }
     const el = inputRef.current;
     if (!el) return;
-    // Reset to measure the natural content height, then clamp to [base, max].
-    const prev = el.style.height;
+    // Reset height, min-height and flex-grow so scrollHeight reports the true
+    // natural content height. The previous (larger) minHeight would otherwise
+    // inflate scrollHeight, so the box never shrinks back when text is deleted.
+    const prevHeight = el.style.height;
+    const prevMinHeight = el.style.minHeight;
+    const prevFlex = el.style.flex;
     el.style.height = "auto";
+    el.style.minHeight = "0";
+    el.style.flex = "0 0 auto";
     const content = el.scrollHeight;
-    el.style.height = prev;
+    el.style.height = prevHeight;
+    el.style.minHeight = prevMinHeight;
+    el.style.flex = prevFlex;
     setCenterInputTextareaHeight(
       Math.min(Math.max(content, CENTER_TEXTAREA_BASE), CENTER_TEXTAREA_MAX),
     );
@@ -8055,6 +8069,13 @@ export default function AIDock({
                       : "text-accent-2";
                   const preserveRoleCase = !!assistantLabel;
                   const captureUtility = isCaptureUtilityMessage(m);
+                  // Per-turn `⏱ …` timing line. The bubble renderer strips it
+                  // from the body (renderMessageText), so surface it as a
+                  // centered pill after each assistant turn's content — every
+                  // turn keeps its own clock, not just the latest one. Falls
+                  // back to createdAt/completedAt when the text prefix is gone.
+                  const turnTiming =
+                    !isUser && !isSystem ? turnTimingFromMessage(m) : "";
                   const assistantActions =
                     isChat &&
                     !isUser &&
@@ -8346,16 +8367,16 @@ export default function AIDock({
                           }}
                         />
                       )}
+                      {turnTiming && (
+                        <div className="flex justify-center pt-1">
+                          <span className="rounded-full border border-border bg-panel-2 px-3 py-1 font-mono text-[11px] leading-4 text-fg-dim tabular-nums">
+                            {turnTiming}
+                          </span>
+                        </div>
+                      )}
                     </li>
                   );
                 })}
-                {lastAssistantTiming && (
-                  <li className="flex justify-center pt-1">
-                    <span className="rounded-full border border-border bg-panel-2 px-3 py-1 font-mono text-[11px] leading-4 text-fg-dim tabular-nums">
-                      {lastAssistantTiming}
-                    </span>
-                  </li>
-                )}
               </ul>
             )}
           </div>

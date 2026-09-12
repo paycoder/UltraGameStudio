@@ -937,7 +937,51 @@ struct LocalFilePreview {
     truncated: bool,
     text: Option<String>,
     base64: Option<String>,
+    /// Absolute path the frontend can hand to `convertFileSrc` so the webview
+    /// streams the file itself (asset protocol, Range requests) instead of
+    /// receiving one giant base64 string through the IPC bridge. Set for every
+    /// media/document preview that no longer inlines its bytes.
+    stream_path: Option<String>,
+    /// Page (PDF/PPTX) or sheet (XLSX) count when the format exposes one. Drives
+    /// the paged preview UI.
+    page_count: Option<u32>,
 }
+
+/// One rendered page/sheet of an Office document, pre-paged in Rust so the
+/// webview never receives the whole archive.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficePreviewPage {
+    index: u32,
+    html: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficePreview {
+    kind: String,
+    page_count: u32,
+    pages: Vec<OfficePreviewPage>,
+    truncated: bool,
+}
+
+/// Downscaled raster returned by `read_image_thumbnail`. Chat chips render many
+/// screenshots at once, so they take a few-KB JPEG instead of a full-resolution
+/// base64 payload each.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageThumbnail {
+    base64: String,
+    mime: String,
+    width: u32,
+    height: u32,
+}
+
+const OFFICE_PREVIEW_DEFAULT_PAGES: usize = 5;
+const OFFICE_PREVIEW_MAX_PAGES: usize = 50;
+const OFFICE_PREVIEW_MAX_ROWS: usize = 200;
+const PREVIEW_THUMBNAIL_MAX_EDGE: u32 = 512;
+const PREVIEW_THUMBNAIL_QUALITY: u8 = 78;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4128,8 +4172,9 @@ async fn open_workspace_directory(path: String) -> Result<(), String> {
 }
 
 const PREVIEW_TEXT_LIMIT: u64 = 1_500_000;
+/// 仅内联 SVG 保留这个上限：位图/文档改走 asset protocol 后不再随体积线性拖慢读取，
+/// 上限失去意义（历史遗留的 64MB 文档拒绝逻辑也已随之删除）。
 const PREVIEW_IMAGE_LIMIT: u64 = 12 * 1024 * 1024;
-const PREVIEW_DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
 const PREVIEW_BASENAME_SEARCH_LIMIT: usize = 20_000;
 const CLIPBOARD_IMAGE_LIMIT: usize = 32 * 1024 * 1024;
 const CLIPBOARD_VIDEO_LIMIT: usize = 512 * 1024 * 1024;
@@ -4311,12 +4356,14 @@ const WORKSPACE_TREE_EXCLUDED_DIRS: &[&str] = &[
     "saved",
 ];
 
-/// `.ultragamestudio` 下对用户有意义的"素材产物"目录。文件树只在
-/// `.ultragamestudio` 这一层暴露这些目录（粘贴图片、生成的模型/截图等），
-/// 继续隐藏 jobs/session-changes/sidecar 等内部状态。
+/// `.ultragamestudio` 下对用户有意义的"素材产物"目录。文件树与会话变更扫描
+/// 只在 `.ultragamestudio` 这一层暴露这些目录（粘贴图片、生成的模型/截图、
+/// 以及 `docs/` 下的调研报告等 AI 交付物），继续隐藏
+/// jobs/session-changes/sidecar 等内部状态。
 const WORKSPACE_TREE_PRODUCT_DIRS: &[&str] = &[
     "assets",
     "clipboard-images",
+    "docs",
     "model-assets",
     "session-captures",
 ];
@@ -8350,7 +8397,11 @@ fn scan_workspace_snapshot_with_text_budget(
             };
             let relative_path = workspace_tree_child_relative(&relative_dir, &name);
             if file_type.is_dir() {
-                if !workspace_tree_excluded_dir(&name) {
+                // 会话变更要用文件树那套"部分放行"规则，而不是通用排除规则：
+                // 通用规则会把整个 `.ultragamestudio` 挡在外面，于是 AI 按工作区
+                // 约定写进 `.ultragamestudio/docs/` 的交付物永远进不了变更快照，
+                // 「会话文件」面板就一直是 0 个文件。
+                if !workspace_tree_list_excluded_dir(&relative_dir, &name) {
                     stack.push((entry.path(), relative_path));
                 }
                 continue;
@@ -11837,6 +11888,313 @@ async fn knowledge_base_scan_files(
         .map_err(|e| format!("知识库扫描任务失败: {e}"))?
 }
 
+/// Path handed to the frontend for `convertFileSrc`. Reuses the display
+/// normaliser so Windows' canonical `\\?\` prefix — which the asset protocol
+/// scope would never match — is stripped before the path reaches the webview.
+fn preview_stream_path(path: &std::path::Path) -> String {
+    display_preview_path(path)
+}
+
+fn preview_extension(path: &std::path::Path) -> String {
+    path.extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Number of slides (PPTX) or worksheets (XLSX) inside an OOXML container.
+/// DOCX has no fixed pagination, so it reports `None` and the frontend renders
+/// the flowed document instead of paging it.
+fn office_page_count(path: &std::path::Path, ext: &str) -> Option<u32> {
+    let prefix = match ext {
+        "pptx" => "ppt/slides/slide",
+        "xlsx" => "xl/worksheets/sheet",
+        _ => return None,
+    };
+    let file = std::fs::File::open(path).ok()?;
+    let archive = zip::ZipArchive::new(file).ok()?;
+    let count = archive
+        .file_names()
+        .filter(|name| {
+            name.starts_with(prefix) && name.ends_with(".xml") && !name.contains("/_rels/")
+        })
+        .count();
+    (count > 0).then_some(count as u32)
+}
+
+/// Decode the XML entities that actually occur in OOXML text runs.
+fn unescape_ooxml_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find('&') {
+        out.push_str(&rest[..index]);
+        let tail = &rest[index..];
+        let (replacement, consumed) = if tail.starts_with("&amp;") {
+            ("&", 5)
+        } else if tail.starts_with("&lt;") {
+            ("<", 4)
+        } else if tail.starts_with("&gt;") {
+            (">", 4)
+        } else if tail.starts_with("&quot;") {
+            ("\"", 6)
+        } else if tail.starts_with("&apos;") {
+            ("'", 6)
+        } else {
+            ("&", 1)
+        };
+        out.push_str(replacement);
+        rest = &tail[consumed..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn escape_html_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Inner XML of every `<tag>` / `<tag attr="…">` element, in document order.
+/// Returns raw (still-escaped) slices so callers can recurse into nested
+/// elements before decoding text. A search for `t` will not match `table`.
+fn collect_element_inner<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let open_head = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut inners = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = xml[cursor..].find(&open_head) {
+        let start = cursor + rel;
+        let after_head = start + open_head.len();
+        let Some(attr_len) = xml[after_head..].find('>') else {
+            break;
+        };
+        let opener_end = after_head + attr_len + 1;
+        let rest = &xml[after_head..opener_end];
+        let well_formed = rest.starts_with('>')
+            || rest.starts_with('/')
+            || rest.starts_with(char::is_whitespace);
+        if !well_formed {
+            cursor = after_head;
+            continue;
+        }
+        if rest.starts_with('/') {
+            cursor = opener_end;
+            continue;
+        }
+        let Some(end_rel) = xml[opener_end..].find(&close) else {
+            break;
+        };
+        inners.push(&xml[opener_end..opener_end + end_rel]);
+        cursor = opener_end + end_rel + close.len();
+    }
+    inners
+}
+
+/// Opener + inner XML of every `<tag …>` element, so callers can still inspect
+/// attributes (XLSX uses `t="s"` to mark shared-string cells).
+fn collect_elements<'a>(xml: &'a str, tag: &str) -> Vec<(&'a str, &'a str)> {
+    let open_head = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut elements = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = xml[cursor..].find(&open_head) {
+        let start = cursor + rel;
+        let after_head = start + open_head.len();
+        let Some(attr_len) = xml[after_head..].find('>') else {
+            break;
+        };
+        let opener_end = after_head + attr_len + 1;
+        let rest = &xml[after_head..opener_end];
+        let well_formed = rest.starts_with('>')
+            || rest.starts_with('/')
+            || rest.starts_with(char::is_whitespace);
+        if !well_formed {
+            cursor = after_head;
+            continue;
+        }
+        if rest.starts_with('/') {
+            cursor = opener_end;
+            continue;
+        }
+        let Some(end_rel) = xml[opener_end..].find(&close) else {
+            break;
+        };
+        elements.push((&xml[start..opener_end], &xml[opener_end..opener_end + end_rel]));
+        cursor = opener_end + end_rel + close.len();
+    }
+    elements
+}
+
+fn read_zip_entry(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    name: &str,
+) -> Option<String> {
+    let mut entry = archive.by_name(name).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut entry, &mut text).ok()?;
+    Some(text)
+}
+
+/// `(index, name)` for the numbered parts under `prefix`, ordered by index so
+/// slide 2 always follows slide 1.
+fn office_sorted_entries(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    prefix: &str,
+) -> Vec<(u32, String)> {
+    let mut entries: Vec<(u32, String)> = archive
+        .file_names()
+        .filter(|name| {
+            name.starts_with(prefix) && name.ends_with(".xml") && !name.contains("/_rels/")
+        })
+        .map(|name| {
+            let index = name[prefix.len()..name.len() - 4]
+                .parse::<u32>()
+                .unwrap_or(u32::MAX);
+            (index, name.to_string())
+        })
+        .collect();
+    entries.sort_by_key(|(index, _)| *index);
+    entries
+}
+
+/// Text runs of a slide, one paragraph per `<a:t>` run group. PowerPoint keeps
+/// no paragraph boundary we can trust, so runs become lines.
+fn pptx_page_html(slide_xml: &str, index: u32) -> String {
+    let mut html = format!("<h2>第 {index} 页</h2>");
+    let mut wrote = false;
+    for run in collect_element_inner(slide_xml, "a:t") {
+        let text = unescape_ooxml_text(run);
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        html.push_str("<p>");
+        html.push_str(&escape_html_text(trimmed));
+        html.push_str("</p>");
+        wrote = true;
+    }
+    if !wrote {
+        html.push_str("<p class=\"preview-empty\">本页没有可提取的文本（可能是图片或图表）。</p>");
+    }
+    html
+}
+
+fn xlsx_cell_text(inner: &str, opener: &str, shared: &[String]) -> String {
+    // Inline strings keep their text in `<is><t>`.
+    if let Some(text) = collect_element_inner(inner, "t").into_iter().next() {
+        return unescape_ooxml_text(text);
+    }
+    let Some(value) = collect_element_inner(inner, "v").into_iter().next() else {
+        return String::new();
+    };
+    if opener.contains("t=\"s\"") || opener.contains("t='s'") {
+        let index = value.trim().parse::<usize>().unwrap_or(usize::MAX);
+        return shared.get(index).cloned().unwrap_or_default();
+    }
+    value.to_string()
+}
+
+fn xlsx_page_html(sheet_xml: &str, shared: &[String], index: u32, max_rows: usize) -> String {
+    let rows = collect_elements(sheet_xml, "row");
+    let total_rows = rows.len();
+    let mut html = format!("<h2>工作表 {index}</h2><table><tbody>");
+    for (row_index, (_, row_inner)) in rows.iter().take(max_rows).enumerate() {
+        html.push_str("<tr><th class=\"preview-row-number\">");
+        html.push_str(&(row_index + 1).to_string());
+        html.push_str("</th>");
+        for (opener, cell_inner) in collect_elements(row_inner, "c") {
+            let text = xlsx_cell_text(cell_inner, opener, shared);
+            html.push_str("<td>");
+            html.push_str(&escape_html_text(&text));
+            html.push_str("</td>");
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table>");
+    if total_rows > max_rows {
+        html.push_str(&format!(
+            "<p class=\"preview-empty\">仅显示前 {max_rows} 行，共 {total_rows} 行。</p>"
+        ));
+    }
+    html
+}
+
+fn preview_office_document_blocking(
+    path: String,
+    cwd: Option<String>,
+    max_pages: Option<usize>,
+) -> Result<OfficePreview, String> {
+    let path = normalize_preview_separators(&path);
+    let resolved = preview_path(&path, cwd.as_deref())?;
+    let resolved = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    let ext = preview_extension(&resolved);
+    let max_pages = max_pages
+        .unwrap_or(OFFICE_PREVIEW_DEFAULT_PAGES)
+        .clamp(1, OFFICE_PREVIEW_MAX_PAGES);
+
+    let file = std::fs::File::open(&resolved).map_err(|e| format!("打开文档失败：{e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析文档结构失败：{e}"))?;
+
+    match ext.as_str() {
+        "pptx" => {
+            let slides = office_sorted_entries(&mut archive, "ppt/slides/slide");
+            let page_count = slides.len() as u32;
+            let mut pages = Vec::new();
+            for (index, name) in slides.into_iter().take(max_pages) {
+                let Some(xml) = read_zip_entry(&mut archive, &name) else {
+                    continue;
+                };
+                pages.push(OfficePreviewPage {
+                    index,
+                    html: pptx_page_html(&xml, index),
+                });
+            }
+            Ok(OfficePreview {
+                kind: "pptx".to_string(),
+                page_count,
+                truncated: page_count as usize > pages.len(),
+                pages,
+            })
+        }
+        "xlsx" => {
+            let shared = read_zip_entry(&mut archive, "xl/sharedStrings.xml")
+                .map(|xml| {
+                    collect_element_inner(&xml, "si")
+                        .into_iter()
+                        .map(|entry| {
+                            collect_element_inner(entry, "t")
+                                .into_iter()
+                                .map(unescape_ooxml_text)
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            let sheets = office_sorted_entries(&mut archive, "xl/worksheets/sheet");
+            let page_count = sheets.len() as u32;
+            let mut pages = Vec::new();
+            for (index, name) in sheets.into_iter().take(max_pages) {
+                let Some(xml) = read_zip_entry(&mut archive, &name) else {
+                    continue;
+                };
+                pages.push(OfficePreviewPage {
+                    index,
+                    html: xlsx_page_html(&xml, &shared, index, OFFICE_PREVIEW_MAX_ROWS),
+                });
+            }
+            Ok(OfficePreview {
+                kind: "xlsx".to_string(),
+                page_count,
+                truncated: page_count as usize > pages.len(),
+                pages,
+            })
+        }
+        other => Err(format!("预览器暂不支持分页读取 .{other} 文档。")),
+    }
+}
+
 fn preview_local_file_blocking(
     path: String,
     cwd: Option<String>,
@@ -11868,20 +12226,26 @@ fn preview_local_file_blocking(
     let path = display_preview_path(&resolved);
 
     if let Some(mime) = image_mime_for_path(&resolved) {
-        if size_bytes > PREVIEW_IMAGE_LIMIT {
+        // SVG is markup and stays cheap inline; every raster format streams. A
+        // 12 MB screenshot base64-encodes to ~16 MB and had to be serialised
+        // through IPC before the webview could even start decoding, so the
+        // asset protocol (Range requests, native decoding) wins for bitmaps.
+        if mime == "image/svg+xml" && size_bytes <= PREVIEW_IMAGE_LIMIT {
+            let bytes = std::fs::read(&resolved).map_err(|e| format!("读取图片失败：{e}"))?;
+            use base64::Engine;
             return Ok(LocalFilePreview {
                 path,
                 file_name,
-                kind: "binary".to_string(),
+                kind: "image".to_string(),
                 mime: Some(mime.to_string()),
                 size_bytes,
                 truncated: false,
                 text: None,
-                base64: None,
+                base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                stream_path: None,
+                page_count: None,
             });
         }
-        let bytes = std::fs::read(&resolved).map_err(|e| format!("读取图片失败：{e}"))?;
-        use base64::Engine;
         return Ok(LocalFilePreview {
             path,
             file_name,
@@ -11890,34 +12254,29 @@ fn preview_local_file_blocking(
             size_bytes,
             truncated: false,
             text: None,
-            base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+            base64: None,
+            stream_path: Some(preview_stream_path(&resolved)),
+            page_count: None,
         });
     }
 
     if let Some(mime) = document_mime_for_path(&resolved) {
-        if size_bytes > PREVIEW_DOCUMENT_LIMIT {
-            return Ok(LocalFilePreview {
-                path,
-                file_name,
-                kind: "binary".to_string(),
-                mime: Some(mime.to_string()),
-                size_bytes,
-                truncated: false,
-                text: None,
-                base64: None,
-            });
-        }
-        let bytes = std::fs::read(&resolved).map_err(|e| format!("读取文档失败：{e}"))?;
-        use base64::Engine;
+        let ext = preview_extension(&resolved);
+        // PDF renders through the paged pdf.js viewer; the OOXML family is a zip
+        // container and renders through `preview_office_document`, which pulls
+        // only the leading slides/sheets instead of the whole archive.
+        let kind = if ext == "pdf" { "document" } else { "office" };
         return Ok(LocalFilePreview {
             path,
             file_name,
-            kind: "document".to_string(),
+            kind: kind.to_string(),
             mime: Some(mime.to_string()),
             size_bytes,
             truncated: false,
             text: None,
-            base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+            base64: None,
+            stream_path: Some(preview_stream_path(&resolved)),
+            page_count: office_page_count(&resolved, &ext),
         });
     }
 
@@ -11934,6 +12293,8 @@ fn preview_local_file_blocking(
             truncated: false,
             text: None,
             base64: None,
+            stream_path: None,
+            page_count: None,
         });
     }
 
@@ -11958,6 +12319,8 @@ fn preview_local_file_blocking(
             truncated: false,
             text: None,
             base64: None,
+            stream_path: Some(preview_stream_path(&resolved)),
+            page_count: None,
         });
     }
 
@@ -11971,6 +12334,8 @@ fn preview_local_file_blocking(
             truncated: false,
             text: None,
             base64: None,
+            stream_path: None,
+            page_count: None,
         });
     };
 
@@ -11983,7 +12348,26 @@ fn preview_local_file_blocking(
         truncated,
         text: Some(text),
         base64: None,
+        // HTML previews load through the asset protocol so relative
+        // stylesheets/images resolve and the 1.5 MB text cap stops applying.
+        stream_path: (text_mime_for_path(&resolved) == "text/html")
+            .then(|| preview_stream_path(&resolved)),
+        page_count: None,
     })
+}
+
+/// Open the file's directory in the asset protocol scope so `convertFileSrc`
+/// URLs resolve. Without this the protocol returns 403 for anything outside the
+/// app's own resources. Covers video, image, PDF, Office and HTML previews.
+fn allow_preview_stream(app: &AppHandle, preview: &LocalFilePreview) {
+    let Some(stream) = preview.stream_path.as_deref() else {
+        return;
+    };
+    let stream = std::path::Path::new(stream);
+    let absolute = std::fs::canonicalize(stream).unwrap_or_else(|_| stream.to_path_buf());
+    if let Some(parent) = absolute.parent() {
+        let _ = app.asset_protocol_scope().allow_directory(parent, false);
+    }
 }
 
 #[tauri::command]
@@ -11997,19 +12381,75 @@ async fn preview_local_file(
             .await
             .map_err(|e| format!("文件预览任务失败: {e}"))??;
 
-    // Let the frontend stream the video through the asset protocol
-    // (`convertFileSrc`). Scope the file's directory so the webview is allowed
-    // to load it; without this the asset protocol returns 403 for files
-    // outside the app's own resources.
-    if preview.kind == "video" {
-        if let Ok(abs) = std::fs::canonicalize(&preview.path) {
-            if let Some(parent) = abs.parent() {
-                let _ = app.asset_protocol_scope().allow_directory(parent, false);
-            }
-        }
-    }
-
+    allow_preview_stream(&app, &preview);
     Ok(preview)
+}
+
+/// Paged read of a PPTX/XLSX: only the leading slides/sheets are parsed, so a
+/// 200-slide deck costs the same as a 5-slide one.
+#[tauri::command]
+async fn preview_office_document(
+    path: String,
+    cwd: Option<String>,
+    max_pages: Option<usize>,
+) -> Result<OfficePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        preview_office_document_blocking(path, cwd, max_pages)
+    })
+    .await
+    .map_err(|e| format!("文档分页读取任务失败: {e}"))?
+}
+
+/// Small JPEG for chat thumbnails; always decodes at most `max_edge` pixels on
+/// the long side, so a 12 MB screenshot yields a few KB.
+#[tauri::command]
+async fn read_image_thumbnail(
+    path: String,
+    cwd: Option<String>,
+    max_edge: Option<u32>,
+) -> Result<ImageThumbnail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_image_thumbnail_blocking(path, cwd, max_edge)
+    })
+    .await
+    .map_err(|e| format!("缩略图任务失败: {e}"))?
+}
+
+fn read_image_thumbnail_blocking(
+    path: String,
+    cwd: Option<String>,
+    max_edge: Option<u32>,
+) -> Result<ImageThumbnail, String> {
+    let path = normalize_preview_separators(&path);
+    let resolved = preview_path(&path, cwd.as_deref())?;
+    let resolved = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    let max_edge = max_edge
+        .unwrap_or(PREVIEW_THUMBNAIL_MAX_EDGE)
+        .clamp(32, 2048);
+
+    let image = image::ImageReader::open(&resolved)
+        .map_err(|e| format!("打开图片失败：{e}"))?
+        .with_guessed_format()
+        .map_err(|e| format!("识别图片格式失败：{e}"))?
+        .decode()
+        .map_err(|e| format!("解码图片失败：{e}"))?;
+
+    // `thumbnail` keeps the aspect ratio and never upscales, so a small icon
+    // passes through unchanged while a 4K screenshot collapses to a few KB.
+    let thumb = image.thumbnail(max_edge, max_edge).to_rgb8();
+    let (width, height) = thumb.dimensions();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, PREVIEW_THUMBNAIL_QUALITY)
+        .encode(thumb.as_raw(), width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|e| format!("编码缩略图失败：{e}"))?;
+
+    use base64::Engine;
+    Ok(ImageThumbnail {
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        mime: "image/jpeg".to_string(),
+        width,
+        height,
+    })
 }
 
 #[tauri::command]
@@ -17226,12 +17666,29 @@ async fn ai_cli(
             args.push("--output-format".into());
             args.push("stream-json".into());
 
-            if let Some(m) = model
-                .as_deref()
-                .filter(|m| cli_runtime::should_pass_model(&adapter, m))
-            {
+            // Model selection never rides a real id via `--model`: the CLI
+            // resolves unknown aliases against config.toml's [models.*] table
+            // and dies with `Model "<id>" is not configured in config.toml`
+            // (should_pass_model("kimi", ..) is false for every id). When the
+            // env overlay is active (KIMI_MODEL_NAME + KIMI_MODEL_API_KEY,
+            // injected per-channel by resolver.ts) the CLI registers the
+            // synthesized model under the reserved alias `__kimi_env_model__`
+            // — pin it explicitly so a stale `default_model` in the user's
+            // config.toml cannot shadow the channel's selected model. Without
+            // the overlay, omit `-m` and let the CLI use its own login state.
+            let kimi_env_overlay_active = env_vars
+                .as_ref()
+                .and_then(|vars| env_value(vars, "KIMI_MODEL_NAME"))
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+                && env_vars
+                    .as_ref()
+                    .and_then(|vars| env_value(vars, "KIMI_MODEL_API_KEY"))
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty());
+            if kimi_env_overlay_active {
                 args.push("--model".into());
-                args.push(m.to_string());
+                args.push("__kimi_env_model__".into());
             }
 
             if let Some(dir) = cwd.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
@@ -19540,6 +19997,234 @@ async fn ai_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1x1 透明 PNG。位图预览测试只需要一个真能被 `image` 解码的样本。
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn preview_fixture_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ugs-preview-{label}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_test_zip(path: &std::path::Path, entries: &[(&str, &str)]) {
+        use std::io::Write;
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    /// 位图必须走 asset protocol：整张 12 MB 截图 base64 之后要在 IPC 上传约
+    /// 16 MB 字符串，前端还得先 base64 解码才能开始解码图片。
+    #[test]
+    fn bitmap_preview_streams_instead_of_inlining_base64() {
+        let dir = preview_fixture_dir("bitmap-stream");
+        let file = dir.join("shot.png");
+        std::fs::write(&file, TINY_PNG).unwrap();
+
+        let preview =
+            preview_local_file_blocking(file.to_string_lossy().to_string(), None).unwrap();
+
+        assert_eq!(preview.kind, "image");
+        assert!(preview.base64.is_none(), "位图不应再走 base64 IPC");
+        let stream = preview.stream_path.expect("位图必须给出流式路径");
+        assert!(
+            !stream.starts_with(r"\\?\"),
+            "asset protocol 匹配不到 canonical 前缀：{stream}"
+        );
+        assert!(stream.ends_with("shot.png"), "实际: {stream}");
+    }
+
+    /// SVG 是标记文本、体积可控，保留内联路径即可，不必多开一次 asset 请求。
+    #[test]
+    fn svg_preview_stays_inline() {
+        let dir = preview_fixture_dir("svg-inline");
+        let file = dir.join("icon.svg");
+        std::fs::write(&file, "<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+
+        let preview =
+            preview_local_file_blocking(file.to_string_lossy().to_string(), None).unwrap();
+
+        assert_eq!(preview.kind, "image");
+        assert!(preview.base64.is_some(), "矢量图应保持内联");
+        assert!(preview.stream_path.is_none());
+    }
+
+    /// PPTX/XLSX 走 office 分支并报出页数，避免前端把整包 base64 进内存。
+    #[test]
+    fn office_preview_reports_slide_and_sheet_counts() {
+        let dir = preview_fixture_dir("office-count");
+        let pptx = dir.join("deck.pptx");
+        write_test_zip(
+            &pptx,
+            &[
+                ("ppt/slides/slide1.xml", "<a:t>一</a:t>"),
+                ("ppt/slides/slide2.xml", "<a:t>二</a:t>"),
+            ],
+        );
+        let xlsx = dir.join("book.xlsx");
+        write_test_zip(&xlsx, &[("xl/worksheets/sheet1.xml", "<worksheet/>")]);
+
+        let slides =
+            preview_local_file_blocking(pptx.to_string_lossy().to_string(), None).unwrap();
+        assert_eq!(slides.kind, "office");
+        assert_eq!(slides.page_count, Some(2));
+        assert!(slides.base64.is_none(), "Office 文档不应走 base64 IPC");
+        assert!(slides.stream_path.is_some());
+
+        let sheets =
+            preview_local_file_blocking(xlsx.to_string_lossy().to_string(), None).unwrap();
+        assert_eq!(sheets.kind, "office");
+        assert_eq!(sheets.page_count, Some(1));
+    }
+
+    /// 「先读前面几页」：请求 2 页时第 3 页的内容根本不该被解析。
+    #[test]
+    fn office_paging_reads_only_the_requested_slides() {
+        let dir = preview_fixture_dir("office-paging");
+        let pptx = dir.join("deck.pptx");
+        write_test_zip(
+            &pptx,
+            &[
+                ("ppt/slides/slide1.xml", "<a:t>第一页</a:t>"),
+                ("ppt/slides/slide2.xml", "<a:t>第二页</a:t>"),
+                ("ppt/slides/slide3.xml", "<a:t>第三页</a:t>"),
+            ],
+        );
+
+        let preview =
+            preview_office_document_blocking(pptx.to_string_lossy().to_string(), None, Some(2))
+                .unwrap();
+
+        assert_eq!(preview.kind, "pptx");
+        assert_eq!(preview.page_count, 3);
+        assert_eq!(preview.pages.len(), 2, "只应解析请求的前两页");
+        assert!(preview.truncated, "被截断时要能提示用户");
+        assert!(preview.pages[0].html.contains("第一页"));
+        assert!(preview.pages[1].html.contains("第二页"));
+        assert!(!preview.pages.iter().any(|page| page.html.contains("第三页")));
+    }
+
+    /// XLSX 的文本多数存在 sharedStrings 里，单元格只放索引；直接读 `<v>` 会
+    /// 把表格渲染成一列数字。
+    #[test]
+    fn xlsx_preview_resolves_shared_strings() {
+        let dir = preview_fixture_dir("xlsx-shared");
+        let xlsx = dir.join("book.xlsx");
+        write_test_zip(
+            &xlsx,
+            &[
+                (
+                    "xl/sharedStrings.xml",
+                    "<sst><si><t>名称</t></si><si><t>数量</t></si></sst>",
+                ),
+                (
+                    "xl/worksheets/sheet1.xml",
+                    "<worksheet><sheetData>\
+                     <row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c></row>\
+                     <row r=\"2\"><c r=\"A2\"><v>42</v></c></row>\
+                     </sheetData></worksheet>",
+                ),
+            ],
+        );
+
+        let preview =
+            preview_office_document_blocking(xlsx.to_string_lossy().to_string(), None, None)
+                .unwrap();
+
+        assert_eq!(preview.kind, "xlsx");
+        let html = &preview.pages[0].html;
+        assert!(html.contains("名称"), "共享字符串应解析出文本: {html}");
+        assert!(html.contains("数量"), "共享字符串应解析出文本: {html}");
+        assert!(html.contains("42"), "数值单元格应保留: {html}");
+    }
+
+    /// 找 `<t>` 不能把 `<table>` 这类同前缀标签算进去，否则表格结构会被当成
+    /// 文本重复输出。
+    #[test]
+    fn ooxml_tag_scan_ignores_longer_tag_names() {
+        let xml = "<body><table><tr><t>正文</t></tr></table><t>结尾</t></body>";
+        let runs = collect_element_inner(xml, "t");
+        assert_eq!(runs, vec!["正文", "结尾"]);
+    }
+
+    #[test]
+    fn ooxml_text_entities_are_decoded() {
+        assert_eq!(
+            unescape_ooxml_text("A&amp;B &lt;C&gt; &quot;D&quot;"),
+            "A&B <C> \"D\""
+        );
+        assert_eq!(escape_html_text("<b>&</b>"), "&lt;b&gt;&amp;&lt;/b&gt;");
+    }
+
+    /// 缩略图必须真的缩小：聊天气泡里几十张 4K 截图不能各自全尺寸解码。
+    #[test]
+    fn thumbnail_decodes_at_most_max_edge() {
+        let dir = preview_fixture_dir("thumb");
+        let file = dir.join("shot.png");
+        std::fs::write(&file, TINY_PNG).unwrap();
+
+        let thumb = read_image_thumbnail_blocking(
+            file.to_string_lossy().to_string(),
+            None,
+            Some(64),
+        )
+        .unwrap();
+
+        assert!(thumb.width <= 64 && thumb.height <= 64);
+        assert_eq!(thumb.mime, "image/jpeg");
+        assert!(!thumb.base64.is_empty());
+    }
+
+    /// 「会话文件」面板必须能看到 AI 按工作区约定写进 `.ultragamestudio/docs/`
+    /// 的交付物，否则用户拿不到本轮生成的报告；jobs 这类内部状态仍要排除。
+    #[test]
+    fn workspace_change_scan_includes_ultragamestudio_deliverables() {
+        let root = std::env::temp_dir().join(format!(
+            "ugs-change-scan-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let reading = root.join(".ultragamestudio").join("docs").join("reading");
+        let jobs = root.join(".ultragamestudio").join("jobs");
+        std::fs::create_dir_all(&reading).unwrap();
+        std::fs::create_dir_all(&jobs).unwrap();
+        std::fs::write(reading.join("调研.html"), "<html></html>").unwrap();
+        std::fs::write(jobs.join("state.json"), "{}").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}").unwrap();
+
+        let (files, _) = scan_workspace_snapshot(&root);
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+
+        assert!(
+            paths.contains(&".ultragamestudio/docs/reading/调研.html"),
+            "交付物必须进入会话变更快照，实际: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.starts_with(".ultragamestudio/jobs/")),
+            "内部状态目录不应出现在会话变更里，实际: {paths:?}"
+        );
+        assert!(paths.contains(&"main.rs"), "普通工作区文件仍要扫描");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn command_arg_strings(cmd: &Command) -> Vec<String> {
         cmd.get_args()
@@ -22027,6 +22712,8 @@ pub fn run() {
             workspace_changes_cached,
             prepare_isolated_workspace,
             preview_local_file,
+            preview_office_document,
+            read_image_thumbnail,
             file_exists,
             read_local_file_for_upload,
             knowledge_base_scan_files,

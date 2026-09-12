@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { FileCode, FileText, FolderOpen, ImageOff, Loader2, Copy, Check } from 'lucide-react';
 import {
+  displayFileRefLabel,
   displayFileRefPath,
   fileRefLineSuffix,
   isImageFileRef,
@@ -22,7 +23,7 @@ import {
 } from './lib/fileChipBudget';
 import { useStore } from '@/store/useStore';
 import { t } from '@/lib/i18n';
-import { fileExists, previewLocalFile } from '@/lib/tauri';
+import { fileExists, previewLocalFile, readImageThumbnail } from '@/lib/tauri';
 import { createObjectUrlFromBase64, revokeObjectUrl } from '@/lib/objectUrl';
 
 export interface OpenFileIntent {
@@ -205,15 +206,14 @@ function useImageThumbnail(
     let createdUrl: string | null = null;
     setState({ status: 'loading' });
 
-    void previewLocalFile(path, { cwd })
-      .then(async (file) => {
+    // Thumbnails are downscaled in Rust, so a chat holding twenty 4K
+    // screenshots moves a few KB per chip instead of twenty full-resolution
+    // base64 payloads.
+    void readImageThumbnail(path, { cwd })
+      .then(async (thumb) => {
         if (disposed) return;
-        if (file.kind !== 'image' || !file.base64 || !file.mime) {
-          setState({ status: 'error' });
-          return;
-        }
         try {
-          const url = await createObjectUrlFromBase64(file.base64, file.mime);
+          const url = await createObjectUrlFromBase64(thumb.base64, thumb.mime);
           if (disposed) {
             revokeObjectUrl(url);
             return;
@@ -223,6 +223,28 @@ function useImageThumbnail(
         } catch {
           if (!disposed) setState({ status: 'error' });
         }
+      })
+      .catch(() => {
+        // Vector and animated formats have no raster decoder; fall back to the
+        // inline payload `preview_local_file` returns for them.
+        return previewLocalFile(path, { cwd }).then(async (file) => {
+          if (disposed) return;
+          if (file.kind !== 'image' || !file.base64 || !file.mime) {
+            setState({ status: 'error' });
+            return;
+          }
+          try {
+            const url = await createObjectUrlFromBase64(file.base64, file.mime);
+            if (disposed) {
+              revokeObjectUrl(url);
+              return;
+            }
+            createdUrl = url;
+            setState({ status: 'ready', url });
+          } catch {
+            if (!disposed) setState({ status: 'error' });
+          }
+        });
       })
       .catch(() => {
         if (!disposed) setState({ status: 'error' });
@@ -244,6 +266,54 @@ function useImageThumbnail(
  * menu. When no handler is wired the chip is styled inert but still serves as a
  * visual signal that this token is a file path.
  */
+/**
+ * A file reference that fell outside the per-message chip budget, rendered as a
+ * clickable-but-plain link instead of a decorated chip.
+ *
+ * UGS contract: every file path the AI prints must stay clickable. The budget
+ * exists to stop a long answer from painting dozens of thumbnails and hover
+ * targets, but deliverables (generated HTML/MD reports) routinely sit far past
+ * the cutoff — a single analysis reply can carry hundreds of references, so the
+ * artifact the user actually wants is exactly the one the budget would fold
+ * away. Folding may drop decoration; it must never drop clickability, or the
+ * artifact becomes an un-openable string.
+ *
+ * Deliberately calls no hooks: `useFileExists` / `useImageThumbnail` would fire
+ * one backend round-trip per folded reference, which on a 400-reference reply
+ * is exactly the IPC storm the budget was introduced to avoid. Opening is
+ * cheap, and the preview drawer already reports a missing file.
+ */
+export function FoldedFileChip({
+  refData,
+  onOpenFile,
+  cwd,
+  fallback,
+}: {
+  refData: FileRef;
+  onOpenFile?: OpenFileFn;
+  cwd?: string;
+  fallback?: ReactNode;
+}) {
+  const label = `${refData.path}${fileRefLineSuffix(refData)}`;
+
+  if (typeof onOpenFile !== 'function') {
+    return <>{fallback ?? label}</>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onOpenFile(refData)}
+      title={displayFileRefLabel(refData, cwd)}
+      className="ai-file-chip ai-file-chip--folded ai-file-chip--interactive cursor-pointer"
+    >
+      <span className="ai-file-chip__label min-w-0 whitespace-normal break-all text-left">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 export default function FileChip({
   refData,
   onOpenFile,
@@ -257,7 +327,16 @@ export default function FileChip({
 }) {
   const slot = useFileChipSlot();
   if (slot === 'notice') return overflowFallback ?? <FileChipLimitNotice />;
-  if (slot === 'hidden') return overflowFallback ?? null;
+  if (slot === 'hidden') {
+    return (
+      <FoldedFileChip
+        refData={refData}
+        onOpenFile={onOpenFile}
+        cwd={cwd}
+        fallback={overflowFallback}
+      />
+    );
+  }
 
   return <VisibleFileChip refData={refData} onOpenFile={onOpenFile} cwd={cwd} />;
 }
@@ -385,13 +464,23 @@ export function VisibleFileChip({
     </div>
   );
 
-  // Image references render as a clickable thumbnail card instead of a path
-  // chip. Clicking still routes through onOpenFile so the right-side preview
-  // drawer opens exactly as before. If the thumbnail can't be loaded (browser
-  // mode, missing file) we fall through to the plain path chip below.
+  const chipTitle = fileMissing
+    ? `${t(locale, 'chat.fileNotFound')}: ${pathTitle}\n${t(locale, 'chat.fileNotFoundHint')}`
+    : interactive
+      ? `${pathTitle}\n${t(locale, 'chat.revealHint')}`
+      : pathTitle;
+
+  // Image references render the path chip PLUS a clickable thumbnail card.
+  // UGS requirement: every AI-output document/image path must stay visible as
+  // clickable text — a bare thumbnail with no path label reads as "not a file
+  // chip" and previously hid the open-in-preview affordance entirely. Both the
+  // chip label and the thumbnail route through onOpenFile so the right-side
+  // preview drawer opens exactly as before. While the thumbnail loads we show
+  // a spinner inside the card; if it can't be loaded (browser mode, missing
+  // file) we fall through to just the plain path chip below.
   if (isImage && thumb.status !== 'error') {
     return (
-      <span className="relative inline-flex max-w-full align-top">
+      <span className="relative inline-flex max-w-full items-center gap-1.5 align-middle">
         <button
           type="button"
           disabled={!interactive || fileMissing}
@@ -403,7 +492,7 @@ export function VisibleFileChip({
               : pathTitle
           }
           className={
-            'ai-file-chip-thumb group relative inline-flex h-[72px] w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-panel-2 align-top ' +
+            'ai-file-chip-thumb group relative inline-flex h-[72px] w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-panel-2 align-middle ' +
             (interactive && !fileMissing ? 'cursor-pointer hover:border-accent' : 'cursor-default') +
             (fileMissing ? ' border-status-error/50' : '')
           }
@@ -419,16 +508,32 @@ export function VisibleFileChip({
             <Loader2 size={16} className="animate-spin text-accent" />
           )}
         </button>
+        <button
+          type="button"
+          disabled={!interactive || fileMissing}
+          onClick={interactive && !fileMissing ? openFile : undefined}
+          onContextMenu={openContextMenu}
+          title={chipTitle}
+          className={
+            'ai-file-chip inline-flex max-w-full items-center gap-1 rounded border border-transparent bg-transparent px-0.5 py-px align-baseline font-mono text-[12px] leading-snug ' +
+            (interactive && !fileMissing
+              ? 'ai-file-chip--interactive cursor-pointer'
+              : 'cursor-default text-fg-dim')
+          }
+        >
+          <span className="ai-file-chip__label min-w-0 whitespace-normal break-all text-left">
+            {originalPath}
+            {lineSuffix && (
+              <span className={interactive ? 'opacity-75' : 'text-fg-faint'}>
+                {lineSuffix}
+              </span>
+            )}
+          </span>
+        </button>
         {contextMenu}
       </span>
     );
   }
-
-  const chipTitle = fileMissing
-    ? `${t(locale, 'chat.fileNotFound')}: ${pathTitle}\n${t(locale, 'chat.fileNotFoundHint')}`
-    : interactive
-      ? `${pathTitle}\n${t(locale, 'chat.revealHint')}`
-      : pathTitle;
 
   return (
     <span className="relative inline-flex max-w-full align-baseline">

@@ -124,9 +124,20 @@ pub fn should_pass_model(adapter: &str, model: &str) -> bool {
     }
     let lower = m.to_ascii_lowercase();
     let protocol = adapter_protocol(adapter);
-    if matches!(protocol, "codex" | "gemini" | "kimi" | "grok") {
+    if matches!(protocol, "codex" | "gemini" | "grok") {
         return !matches!(lower.as_str(), "haiku" | "sonnet" | "opus")
             && !lower.starts_with("claude-");
+    }
+    if protocol == "kimi" {
+        // kimi-code >= 0.38 synthesizes an in-memory provider/model from
+        // KIMI_MODEL_NAME + KIMI_MODEL_API_KEY (see resolver.ts). That env
+        // overlay registers under the reserved alias `__kimi_env_model__`;
+        // passing the real model id via `--model` makes the CLI look it up in
+        // config.toml's [models.*] table (bypassing the env overlay) and die
+        // with `Model "<id>" is not configured in config.toml`. The caller
+        // (lib.rs kimi branch) pins `-m __kimi_env_model__` whenever the env
+        // overlay is active, so no real id may ride the flag here.
+        return false;
     }
     if protocol == "deepseek-harness" {
         // dsh resolves its model from `$DSH_HOME/settings.yaml`, never a flag.
@@ -790,11 +801,14 @@ mod tests {
     }
 
     #[test]
-    fn kimi_passes_kimi_models_but_not_claude_tiers() {
-        assert!(should_pass_model("kimi", "kimi-k2-0711-preview"));
-        assert!(should_pass_model("kimi", "kimi-k2-thinking"));
-        // Claude tiers / ids are filtered out for kimi (they must not leak into
-        // a `--model` flag of the kimi CLI).
+    fn kimi_never_passes_model() {
+        // kimi-code >= 0.38 takes its model from the KIMI_MODEL_* env overlay
+        // (registered under the reserved alias `__kimi_env_model__`); a real id
+        // on `--model` is resolved against config.toml instead and dies with
+        // "Model \"<id>\" is not configured in config.toml".
+        assert!(!should_pass_model("kimi", "kimi-k2-0711-preview"));
+        assert!(!should_pass_model("kimi", "kimi-k2-thinking"));
+        assert!(!should_pass_model("kimi", "kimi-k3"));
         assert!(!should_pass_model("kimi", "sonnet"));
         assert!(!should_pass_model("kimi", "claude-opus-4-8"));
         assert!(!should_pass_model("kimi", "   "));

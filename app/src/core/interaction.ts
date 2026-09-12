@@ -354,6 +354,109 @@ export function summarizeAnswer(
 }
 
 /**
+ * Fallback for when the model ignores the `<<UGS_ASK>>` protocol and asks its
+ * question as plain text — e.g. "滑条要放在哪里？A) 顶部 B) 底部". Without
+ * this the user sees a bubble ending in `?`, no widget, and the chat turn
+ * stays parked on `awaitInteraction` forever (the "sent it and nothing
+ * happened" stall).
+ *
+ * Heuristic, gated by the caller on a settings toggle:
+ * - The reply must contain at least one `?` / `？`; we anchor on the LAST one.
+ * - Everything after that last `?` must be blank lines or choice lines — the
+ *   model may list options *under* the question ("…？\nA) 顶部\nB) 底部"), so
+ *   we don't require the reply to literally end with `?`. But if non-choice
+ *   prose sits between the last `?` and the end, the model wasn't actually
+ *   waiting on an answer (it was mid-explanation) and we must not pause.
+ * - Choice-line patterns: `- foo`, `1. foo`, `A) foo`, `（B）foo` — at least
+ *   two distinct choices makes it a `select`; otherwise it's an `input`.
+ * - The prompt is the paragraph containing the last `?` (from the most recent
+ *   blank-line break onward), with choice lines stripped when we matched them.
+ *
+ * `allowInput: true` is always set on the synthesized select so the user can
+ * escape a wrong detection by typing their own answer. We deliberately never
+ * return `confirm` here — a false-positive confirm has no safe default.
+ *
+ * Returns null when the text doesn't look like a question, so the caller can
+ * fall through to the plain-bubble path.
+ */
+export function detectFallbackInteraction(text: string): InteractionRequest | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  // Choice-line patterns. Each match captures the label without its leading
+  // bullet; we keep them in encounter order, deduped, capped at 6 so an
+  // accidental match on a long list can't produce an unwieldy widget.
+  const CHOICE_LINE_RE =
+    /^\s*(?:[-*•]|\d{1,2}\s*[.、)）]|[A-Ha-hＡ-Ｈａ-ｈ]\s*[.、)）]|[(（]\s*[A-Ha-hＡ-Ｈａ-ｈ]\s*[)）])\s*(.{2,80}?)\s*$/gm;
+
+  const isChoiceLine = (line: string): boolean => {
+    CHOICE_LINE_RE.lastIndex = 0;
+    return CHOICE_LINE_RE.test(line);
+  };
+
+  // Locate the LAST question mark (`?` / `？`) in the reply. The question is
+  // the "tail" the user must respond to; everything after it must be either
+  // blank lines or choice lines (the options the model listed under the
+  // question). If any non-blank non-choice content sits between the last "?"
+  // and the end of the reply, the model wasn't actually waiting on an answer
+  // — it was mid-explanation — and we must not pause the turn.
+  const lastQuestionIdx = (() => {
+    const half = trimmed.lastIndexOf('?');
+    const full = trimmed.lastIndexOf('？');
+    return Math.max(half, full);
+  })();
+  if (lastQuestionIdx === -1) return null;
+  const tailAfterQuestion = trimmed.slice(lastQuestionIdx + 1);
+  const tailLines = tailAfterQuestion.split(/\r?\n/);
+  for (const line of tailLines) {
+    const s = line.trim();
+    if (!s) continue;
+    if (!isChoiceLine(line)) return null;
+  }
+
+  const options: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  CHOICE_LINE_RE.lastIndex = 0;
+  while ((m = CHOICE_LINE_RE.exec(trimmed)) !== null) {
+    const label = m[1].trim().replace(/[。；;，,]\s*$/, '');
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    options.push(label);
+    if (options.length >= 6) break;
+  }
+
+  // Pull the question itself for the prompt. If we matched options, strip the
+  // choice lines so the prompt reads as a single question; otherwise keep the
+  // full trimmed tail (bounded to a sane widget length). We only surface the
+  // text from the most recent paragraph break onward — earlier prose in the
+  // same reply is context the user has already read, not part of the question.
+  const upToQuestionEnd = trimmed.slice(0, lastQuestionIdx + 1);
+  const lastParaBreak = Math.max(
+    upToQuestionEnd.lastIndexOf('\n\n'),
+    upToQuestionEnd.lastIndexOf('\r\n\r\n'),
+  );
+  const questionBlock = (lastParaBreak === -1
+    ? upToQuestionEnd
+    : upToQuestionEnd.slice(lastParaBreak + 1)
+  ).trim();
+  const promptSource = options.length >= 2
+    ? questionBlock
+        .split(/\r?\n/)
+        .filter((line) => !isChoiceLine(line))
+        .join(' ')
+        .trim()
+    : questionBlock;
+  const prompt = (promptSource || trimmed).slice(0, 200);
+  if (!prompt) return null;
+
+  if (options.length >= 2) {
+    return { type: 'select', prompt, options, multi: false, allowInput: true };
+  }
+  return { type: 'input', prompt, multiline: false };
+}
+
+/**
  * Build the appendix fed back into the node prompt on re-invocation, so the
  * model continues with the user's answer instead of asking again.
  */

@@ -1,4 +1,4 @@
-import { SIMPLE_CHAT_SYSTEM, buildAssetCapabilityBlock } from '@/lib/anthropic';
+import { SIMPLE_CHAT_SYSTEM, REMOTE_BACKGROUND_JOB_INSTRUCTION, buildAssetCapabilityBlock } from '@/lib/anthropic';
 import { WORKSPACE_LAYOUT_DIRECTIVE } from '@/runtime';
 import { isLocale, languageAdaptationPrompt, languageDirectiveReminder } from '@/lib/i18n';
 import {
@@ -569,6 +569,11 @@ async function buildRemotePrompt(options: StartRemoteChatTurnOptions): Promise<s
     : '';
   const system = [
     SIMPLE_CHAT_SYSTEM,
+    // 远程 Claude Code CLI 同样会启动后台任务（p4 sync、长编译、whisper 等），
+    // 必须带上后台任务硬规则，否则远端模型一样会"已启动就交差"。
+    // 用 remote 专用版本：去掉本地 ugs-job 包装器说明（远端没有这个 CLI），
+    // 只保留"后台任务不到终态不准结束回合"这条核心约束。
+    REMOTE_BACKGROUND_JOB_INSTRUCTION,
     languageAdaptationPrompt(isLocale(options.locale) ? options.locale : 'zh-CN'),
     options.personalBlock,
     options.gameExpertBlock,
