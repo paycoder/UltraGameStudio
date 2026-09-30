@@ -572,8 +572,12 @@ describe('MessageContent integration', () => {
     expect(html).toMatch(/6q10dLQSzn0_notes\.docx/);
   });
 
-  it('shows a reveal-in-folder menu for interactive file chips', async () => {
-    const calls: Array<{ path: string; reveal?: boolean }> = [];
+  it('shows reveal and open-containing-folder actions for interactive file chips', async () => {
+    const calls: Array<{
+      path: string;
+      reveal?: boolean;
+      containing?: boolean;
+    }> = [];
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -585,7 +589,11 @@ describe('MessageContent integration', () => {
             text: 'Open `src/store/useStore.ts:42`.',
             streaming: false,
             onOpenFile: (ref, intent) => {
-              calls.push({ path: ref.path, reveal: intent?.reveal });
+              calls.push({
+                path: ref.path,
+                reveal: intent?.reveal,
+                containing: intent?.openContainingFolder,
+              });
             },
           }),
         );
@@ -593,34 +601,48 @@ describe('MessageContent integration', () => {
 
       const chip = container.querySelector<HTMLButtonElement>('.ai-file-chip');
       expect(chip).not.toBeNull();
-      await act(async () => {
-        chip!.dispatchEvent(
-          new MouseEvent('contextmenu', {
-            bubbles: true,
-            cancelable: true,
-            clientX: 16,
-            clientY: 18,
-          }),
+      const openMenu = async () => {
+        await act(async () => {
+          chip!.dispatchEvent(
+            new MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              clientX: 16,
+              clientY: 18,
+            }),
+          );
+        });
+        return container.querySelectorAll<HTMLButtonElement>(
+          '.ai-file-chip-menu [role="menuitem"]',
         );
-      });
+      };
 
-      const menuItems = container.querySelectorAll<HTMLButtonElement>(
-        '.ai-file-chip-menu [role="menuitem"]',
-      );
-      // Menu order: copy path, preview in app, reveal in folder
-      const revealItem = menuItems[2];
-      expect(revealItem?.textContent).toContain('在文件夹中显示');
+      let menuItems = await openMenu();
+      // Menu order: copy path, preview in app, open containing folder, reveal in folder
+      const containingItem = menuItems[2];
+      expect(containingItem?.textContent).toContain('打开所在目录');
       await act(async () => {
-        revealItem!.dispatchEvent(
+        containingItem!.dispatchEvent(
           new MouseEvent('pointerdown', { bubbles: true, cancelable: true }),
         );
       });
       expect(container.querySelector('.ai-file-chip-menu')).not.toBeNull();
       await act(async () => {
+        containingItem!.click();
+      });
+      expect(container.querySelector('.ai-file-chip-menu')).toBeNull();
+
+      menuItems = await openMenu();
+      const revealItem = menuItems[3];
+      expect(revealItem?.textContent).toContain('在文件夹中显示');
+      await act(async () => {
         revealItem!.click();
       });
 
-      expect(calls).toEqual([{ path: 'src/store/useStore.ts', reveal: true }]);
+      expect(calls).toEqual([
+        { path: 'src/store/useStore.ts', containing: true },
+        { path: 'src/store/useStore.ts', reveal: true },
+      ]);
       expect(container.querySelector('.ai-file-chip-menu')).toBeNull();
     } finally {
       await act(async () => {

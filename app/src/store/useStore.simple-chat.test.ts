@@ -4658,8 +4658,14 @@ describe('simple-workflow chat mode', () => {
     );
 
     const queuedId = useStore.getState().queuedChatMessageIds[0];
-    // The lightning action is available (queue-steer), not a native steer.
-    expect(useStore.getState().steerableQueuedChatMessageIds).toEqual([queuedId]);
+    // The lightning action is hidden for non-native adapters (no in-turn
+    // steer channel) — the user would otherwise see a button that only
+    // confirms the message without merging it into the running turn, which
+    // reads as "clicked and nothing happened".
+    expect(useStore.getState().steerableQueuedChatMessageIds).toEqual([]);
+    // The confirm-only code path is still reachable programmatically (e.g.
+    // legacy callers); exercising it directly guarantees FIFO fallback keeps
+    // working even though the UI no longer surfaces the action.
     expect(useStore.getState().steerQueuedChatMessage(queuedId)).toBe(true);
 
     // Confirming drops the pending badge immediately and never calls the CLI

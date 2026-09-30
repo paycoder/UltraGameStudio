@@ -68,6 +68,23 @@ export function displayFileRefPath(ref: FileRef, cwd?: string): string {
   return `${root}${separator}${normalizedRelative}`;
 }
 
+/**
+ * The directory that contains `path`, computed from the string alone (no fs
+ * access, no cwd). Returns '' when the path carries no separator — a bare
+ * `readme.md` has no parent of its own, so callers fall back to the workspace
+ * root. Windows drive roots (`C:\`) and POSIX `/` are kept intact so
+ * "open containing folder" never lands on `C:` (an unusable pseudo-path).
+ */
+export function parentDirectoryPath(path: string): string {
+  const trimmed = path.trim().replace(/[\\/]+$/, '');
+  if (!trimmed) return '';
+  const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  if (index < 0) return '';
+  if (index === 0) return trimmed.slice(0, 1);
+  if (/^[A-Za-z]:$/.test(trimmed.slice(0, index))) return trimmed.slice(0, index + 1);
+  return trimmed.slice(0, index);
+}
+
 export function displayFileRefLabel(ref: FileRef, cwd?: string): string {
   return `${displayFileRefPath(ref, cwd)}${fileRefLineSuffix(ref)}`;
 }

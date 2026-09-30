@@ -8,7 +8,12 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { codexConfigSelectsNamedModelProvider, spawnCliAgent } from './cli-spawn';
+import {
+  CODEX_CHANNEL_KEY_ENV,
+  codexConfigSelectsNamedModelProvider,
+  codexProviderForCredentialOverride,
+  spawnCliAgent,
+} from './cli-spawn';
 
 const IS_WINDOWS = process.platform === 'win32';
 let dir: string;
@@ -449,6 +454,37 @@ process.stdin.on('end', () => {
       if (previousUgsHome == null) delete process.env.UGS_HOME;
       else process.env.UGS_HOME = previousUgsHome;
     }
+  });
+  it('overrides only a named provider the config actually declares', () => {
+    const relay = [
+      'model_provider = "relay"',
+      'model = "gpt-6-astra"',
+      '[mcp_servers.ue]',
+      'command = "ue-mcp.exe"',
+      '[model_providers.relay]',
+      'name = "packycode"',
+      'base_url = "https://api.packycode.com/v1"',
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      '',
+    ].join('\n');
+    expect(codexProviderForCredentialOverride(relay)).toBe('relay');
+
+    // The provider table must exist: `-c model_providers.<p>.env_key=…` aimed at
+    // a provider codex cannot resolve would break the turn outright.
+    expect(codexProviderForCredentialOverride('model_provider = "ghost"\n')).toBeNull();
+    // Default routing takes the plain OPENAI_API_KEY overlay instead.
+    expect(codexProviderForCredentialOverride('model_provider = "openai"\n')).toBeNull();
+    expect(codexProviderForCredentialOverride('model = "gpt-5.1"\n')).toBeNull();
+  });
+
+  it('routes the channel key through a stable UGS-owned env var', () => {
+    // The `-c` override and the exported variable must agree, and the name must
+    // be UGS-owned so it can never collide with a user's own key variable.
+    expect(CODEX_CHANNEL_KEY_ENV).toBe('UGS_CODEX_CHANNEL_KEY');
+    expect(`model_providers.relay.env_key="${CODEX_CHANNEL_KEY_ENV}"`).toBe(
+      'model_providers.relay.env_key="UGS_CODEX_CHANNEL_KEY"',
+    );
   });
 });
 

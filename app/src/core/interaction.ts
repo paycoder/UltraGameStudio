@@ -117,7 +117,8 @@ ${ASK_CLOSE}
 - 如果你已经掌握足够信息（例如下方已给出用户的上一次回答），就不要再提问，直接给出最终结果。
 - 不需要用户参与时，正常输出结果即可，不要输出交互块。
 - 严禁把"额外建议""推荐下一步""你可以试试 X 或 Y"之类的收尾性建议包成交互块。只有当缺少用户输入就**无法继续**、且你无法自行合理假设时才出交互块；主问题已回答完后，任何追加建议一律用普通文字陈述，不要变成可点击选项。
-- 不要为了"显得在征求用户意见"而出交互块；只有真正阻塞、必须用户拍板才能继续时才出。`;
+- 不要为了"显得在征求用户意见"而出交互块；只有真正阻塞、必须用户拍板才能继续时才出。
+- 如果上下文里给出了「已确认基线」或「你上一轮的结论」，一律直接沿用：不要重新判定、不要重新读一遍已读过的资料、不要重发已经产出过的完整交付物。`;
 
 /** Coerce an unknown value into a clean string[]; drops empties, de-dupes. */
 function toOptions(value: unknown): string[] {
@@ -353,6 +354,77 @@ export function summarizeAnswer(
   }
 }
 
+/** Replies longer than this are deliverables, not parked questions. */
+const FALLBACK_MAX_REPLY_CHARS = 1200;
+
+/**
+ * How far back from the last `?` an option list may start. Bounds the scan for
+ * a single-paragraph reply, which has no blank line to anchor on.
+ */
+const FALLBACK_WINDOW_CHARS = 600;
+
+/** Horizontal rule (`---`, `***`, `___`) — markdown structure, never a choice. */
+const HORIZONTAL_RULE_RE = /^\s*(?:[-*_]\s*){3,}$/u;
+
+/** A line starting with markdown block syntax is prose, not a choice. */
+const MARKDOWN_BLOCK_RE = /^(?:#{1,6}\s|>\s?|\||`{3})/u;
+
+/**
+ * Reject a candidate option label that is markdown structure rather than a real
+ * choice. Session 037bb1b8 shipped a widget whose options were `--` (a `---`
+ * rule split in half by the bullet regex) and `*答案要点：**` (a bolded bullet).
+ */
+function isUsableOptionLabel(label: string): boolean {
+  const s = label.trim();
+  if (!s) return false;
+  if (HORIZONTAL_RULE_RE.test(s)) return false;
+  if (MARKDOWN_BLOCK_RE.test(s)) return false;
+  if (s.includes('**') || s.includes('__')) return false;
+  // Must carry at least one letter / digit / CJK char, so a mis-split fragment
+  // of punctuation alone never becomes a clickable choice.
+  return /[\p{L}\p{N}]/u.test(s);
+}
+
+/** Trailing markdown decoration (`**`, `_`, `` ` ``, `~~`) on a line. */
+const TRAILING_MARKUP_RE = /[\s*_~`]+$/u;
+
+/**
+ * Questions that ask for PERMISSION to take the next step ("要我继续吗？",
+ * "需要我把这份导出成 docx 吗？") rather than for a missing piece of
+ * information. Kimi's own harness instructs the model to close every turn with
+ * a question, and its in-body fallback wording is exactly this shape; turning
+ * each one into a widget is what made a single request feel like an endless
+ * Q&A loop. Such a question finalizes the turn instead — if the user does want
+ * the next step, "继续" is one message away.
+ *
+ * Deliberately narrow: it needs both an "asking permission" stem and a concrete
+ * follow-up action, so a real information request ("你想要几个难度档位？")
+ * still parks on an input box.
+ */
+const PERMISSION_ASK_RE =
+  /(?:要不要|需不需要|用不用|是否要|是否|要|需要)\s*(?:我|我来|我帮|我帮你|帮你)?[^。！？!?]{0,30}?(?:继续|接着|往下|导出|输出|生成|补充|补全|保存|打包|整理|贴出|贴出来|写|做|处理|开始|动手|发你|发给你|给你)/u;
+
+/** English equivalent of {@link PERMISSION_ASK_RE}. */
+const PERMISSION_ASK_EN_RE =
+  /\b(?:shall|should|do you want me to|would you like me to|want me to)\b[^.?]{0,40}?(?:continue|proceed|go on|keep going|export|save|generate)\b/iu;
+
+/** True when the closing question is only asking to proceed. */
+function isPermissionSeekingQuestion(text: string): boolean {
+  return PERMISSION_ASK_RE.test(text) || PERMISSION_ASK_EN_RE.test(text);
+}
+
+/**
+ * Take the closing clause of `text`, at most `maxChars` long, dropping the
+ * leading partial sentence when we had to cut. Used to keep a synthesized
+ * prompt readable when the "question paragraph" is actually a long document.
+ */
+function tailClause(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const tail = text.slice(-maxChars);
+  const cut = tail.search(/[。！？!?；;]/u);
+  return (cut === -1 ? tail : tail.slice(cut + 1)).trim();
+}
+
 /**
  * Fallback for when the model ignores the `<<UGS_ASK>>` protocol and asks its
  * question as plain text — e.g. "滑条要放在哪里？A) 顶部 B) 底部". Without
@@ -368,9 +440,24 @@ export function summarizeAnswer(
  *   prose sits between the last `?` and the end, the model wasn't actually
  *   waiting on an answer (it was mid-explanation) and we must not pause.
  * - Choice-line patterns: `- foo`, `1. foo`, `A) foo`, `（B）foo` — at least
- *   two distinct choices makes it a `select`; otherwise it's an `input`.
+ *   two distinct choices makes it a `select`; otherwise it's an `input`, unless
+ *   the question only asks for permission to proceed, in which case the turn
+ *   finalizes with no widget.
  * - The prompt is the paragraph containing the last `?` (from the most recent
  *   blank-line break onward), with choice lines stripped when we matched them.
+ * - Trailing markdown decoration is ignored when deciding whether the reply
+ *   ends on the question, so `**要我继续吗？**` behaves like `要我继续吗？`.
+ *
+ * Guards added after session 037bb1b8: a model answered with a multi-thousand
+ * character question bank that ended in "要不要我把这份导出成 docx？". The old
+ * heuristic harvested options from the WHOLE reply, so the bank's `- ` bullets
+ * became the widget's choices (the user was literally offered `--` and
+ * `*答案要点：**`), and every answer re-ran the task from scratch:
+ * - length cap ({@link FALLBACK_MAX_REPLY_CHARS}): a long reply is a
+ *   deliverable, not a parked question — bail out and let the turn finalize;
+ * - options come only from the tail window (the last paragraph holding the `?`
+ *   plus the lines after it), never from the whole document;
+ * - markdown junk is rejected as an option label ({@link isUsableOptionLabel}).
  *
  * `allowInput: true` is always set on the synthesized select so the user can
  * escape a wrong detection by typing their own answer. We deliberately never
@@ -382,6 +469,10 @@ export function summarizeAnswer(
 export function detectFallbackInteraction(text: string): InteractionRequest | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
+  // A long reply is a deliverable (a report, a question bank, a doc), not a
+  // model parked on a question. Treating it as an interaction both fabricates
+  // options out of its markdown bullets and re-runs the whole task on answer.
+  if (trimmed.length > FALLBACK_MAX_REPLY_CHARS) return null;
 
   // Choice-line patterns. Each match captures the label without its leading
   // bullet; we keep them in encounter order, deduped, capped at 6 so an
@@ -391,7 +482,8 @@ export function detectFallbackInteraction(text: string): InteractionRequest | nu
 
   const isChoiceLine = (line: string): boolean => {
     CHOICE_LINE_RE.lastIndex = 0;
-    return CHOICE_LINE_RE.test(line);
+    const hit = CHOICE_LINE_RE.exec(line);
+    return hit !== null && isUsableOptionLabel(hit[1]);
   };
 
   // Locate the LAST question mark (`?` / `？`) in the reply. The question is
@@ -409,18 +501,44 @@ export function detectFallbackInteraction(text: string): InteractionRequest | nu
   const tailAfterQuestion = trimmed.slice(lastQuestionIdx + 1);
   const tailLines = tailAfterQuestion.split(/\r?\n/);
   for (const line of tailLines) {
-    const s = line.trim();
+    // Strip trailing markdown decoration first: a bolded question
+    // (`**要我继续吗？**`) leaves a bare `**` after the `?`, which the old
+    // check misread as non-choice prose and rejected — the same sentence
+    // parked the turn or not depending on whether the model bolded it.
+    const s = line.trim().replace(TRAILING_MARKUP_RE, '');
     if (!s) continue;
-    if (!isChoiceLine(line)) return null;
+    if (!isChoiceLine(s)) return null;
   }
+
+  // The prompt source is the paragraph containing the last `?`; the option
+  // source is that paragraph plus everything after it. Never the whole reply:
+  // earlier sections are a document the user already read, and harvesting their
+  // bullets is what produced the `--` / `*答案要点：**` widget in session
+  // 037bb1b8. For a single-paragraph reply there is no blank line to anchor on,
+  // so the window is additionally capped to a bounded lookback.
+  const upToQuestionEnd = trimmed.slice(0, lastQuestionIdx + 1);
+  const lastParaBreak = Math.max(
+    upToQuestionEnd.lastIndexOf('\n\n'),
+    upToQuestionEnd.lastIndexOf('\r\n\r\n'),
+  );
+  const windowStart = Math.max(
+    lastParaBreak,
+    lastQuestionIdx - FALLBACK_WINDOW_CHARS,
+    0,
+  );
+  const questionBlock = (lastParaBreak === -1
+    ? upToQuestionEnd
+    : upToQuestionEnd.slice(lastParaBreak + 1)
+  ).trim();
 
   const options: string[] = [];
   const seen = new Set<string>();
   let m: RegExpExecArray | null;
   CHOICE_LINE_RE.lastIndex = 0;
-  while ((m = CHOICE_LINE_RE.exec(trimmed)) !== null) {
+  const scanRegion = trimmed.slice(windowStart);
+  while ((m = CHOICE_LINE_RE.exec(scanRegion)) !== null) {
     const label = m[1].trim().replace(/[。；;，,]\s*$/, '');
-    if (!label || seen.has(label)) continue;
+    if (!isUsableOptionLabel(label) || seen.has(label)) continue;
     seen.add(label);
     options.push(label);
     if (options.length >= 6) break;
@@ -431,15 +549,6 @@ export function detectFallbackInteraction(text: string): InteractionRequest | nu
   // full trimmed tail (bounded to a sane widget length). We only surface the
   // text from the most recent paragraph break onward — earlier prose in the
   // same reply is context the user has already read, not part of the question.
-  const upToQuestionEnd = trimmed.slice(0, lastQuestionIdx + 1);
-  const lastParaBreak = Math.max(
-    upToQuestionEnd.lastIndexOf('\n\n'),
-    upToQuestionEnd.lastIndexOf('\r\n\r\n'),
-  );
-  const questionBlock = (lastParaBreak === -1
-    ? upToQuestionEnd
-    : upToQuestionEnd.slice(lastParaBreak + 1)
-  ).trim();
   const promptSource = options.length >= 2
     ? questionBlock
         .split(/\r?\n/)
@@ -447,26 +556,118 @@ export function detectFallbackInteraction(text: string): InteractionRequest | nu
         .join(' ')
         .trim()
     : questionBlock;
-  const prompt = (promptSource || trimmed).slice(0, 200);
+  const prompt = tailClause(promptSource || trimmed, 200).trim();
   if (!prompt) return null;
 
   if (options.length >= 2) {
     return { type: 'select', prompt, options, multi: false, allowInput: true };
   }
+  // No choices under the question and the question only asks to proceed:
+  // finalize. Park on nothing rather than on a one-field form the user has to
+  // fill in just to say "yes, carry on" (see {@link PERMISSION_ASK_RE}).
+  if (isPermissionSeekingQuestion(prompt)) return null;
   return { type: 'input', prompt, multiline: false };
+}
+
+/**
+ * True when an answer carries content worth pinning as a confirmed fact.
+ * Rejects the degenerate cases the fallback widget can produce — an unanswered
+ * box, or a junk option label (`--`, `*答案要点：**`) the user clicked by
+ * accident — so they never get promoted to "已确认基线" for later rounds.
+ */
+export function isPinnableAnswer(
+  req: InteractionRequest,
+  answer: InteractionAnswer,
+): boolean {
+  const text = summarizeAnswer(req, answer).trim();
+  if (text === '(未选择)' || text === '(空)') return false;
+  return isUsableOptionLabel(text);
+}
+
+/** Cumulative context threaded through the multi-round interaction loop. */
+export interface InteractionBaseline {
+  /**
+   * The model's own lead paragraph from the round that produced the current
+   * deliverable — e.g. "简历读完。背景：TA 实习，Unity URP…". Pinning it stops
+   * the next round from re-reading the source material and re-labelling the
+   * task: session 037bb1b8 drifted 技术美术 → 图形引擎(HDRP) → 客户端(UE) across
+   * five rounds of the SAME request, because each round re-judged from scratch.
+   */
+  roundConclusion?: string;
+  /** Earlier answered interactions, oldest first. */
+  confirmations?: readonly string[];
+}
+
+/**
+ * Lead paragraph of a model reply with CLI status noise and protocol sentinels
+ * removed — the raw material for {@link InteractionBaseline.roundConclusion}.
+ * Returns '' when the reply has no usable prose.
+ */
+export function extractLeadConclusion(text: string, maxChars = 400): string {
+  const kept: string[] = [];
+  for (const raw of stripCliProgressMarkers(text).split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line) {
+      if (kept.length) break;
+      continue;
+    }
+    // Tool/prompt sentinels and status glyphs are not prose: skip them while
+    // still looking for the opening paragraph, stop once it has started.
+    if (line.includes('<<UGS_')) {
+      if (kept.length) break;
+      continue;
+    }
+    if (/^[⏱⏳⚙⚠]/u.test(line)) {
+      if (kept.length) break;
+      continue;
+    }
+    if (HORIZONTAL_RULE_RE.test(line)) {
+      if (kept.length) break;
+      continue;
+    }
+    kept.push(line);
+    if (kept.join(' ').length >= maxChars) break;
+  }
+  const block = kept.join(' ').replace(/\s+/gu, ' ').trim();
+  return block.length > maxChars ? `${block.slice(0, maxChars)}…` : block;
 }
 
 /**
  * Build the appendix fed back into the node prompt on re-invocation, so the
  * model continues with the user's answer instead of asking again.
+ *
+ * `baseline` (optional — callers that don't thread it get the original text
+ * byte-for-byte) pins what is already settled, so a re-invocation cannot
+ * silently re-decide it.
  */
 export function formatAnswerForPrompt(
   req: InteractionRequest,
   answer: InteractionAnswer,
+  baseline?: InteractionBaseline,
 ): string {
-  return `---
-用户已回复你上一次的交互请求：
-- 你的问题：${req.prompt}
-- 用户的回答：${summarizeAnswer(req, answer)}
-请基于这个回答继续，不要重复提问，直接产出最终结果。`;
+  const lines = [
+    '---',
+    '用户已回复你上一次的交互请求：',
+    `- 你的问题：${req.prompt}`,
+    `- 用户的回答：${summarizeAnswer(req, answer)}`,
+  ];
+  const pinned: string[] = [];
+  const conclusion = baseline?.roundConclusion?.trim();
+  if (conclusion) {
+    pinned.push(
+      `你上一轮的结论（已确认，必须沿用，不得重新判定或推翻）：${conclusion}`,
+    );
+  }
+  const confirmations = (baseline?.confirmations ?? []).filter(
+    (item) => item.trim().length > 0,
+  );
+  if (confirmations.length) {
+    pinned.push('已确认基线（用户已拍板，后续所有输出必须与之一致）：');
+    confirmations.forEach((item, index) => {
+      pinned.push(`${index + 1}. ${item}`);
+    });
+  }
+  if (pinned.length) lines.push('', ...pinned);
+  lines.push('请基于这个回答继续，不要重复提问，直接产出最终结果。');
+  return lines.join('\n');
 }

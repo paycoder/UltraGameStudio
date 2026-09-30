@@ -47,6 +47,14 @@ export interface StreamArgs {
   userImages?: string[];
   model?: string;
   maxTokens?: number;
+  /**
+   * Anthropic 原生思考控制（`thinking` 请求字段）。由
+   * `thinkingLevels.resolveThinkingPlan` 按档位给出：`enabled` + 预算 token，
+   * 或 `disabled` 关闭思考。缺省时不写该字段，保持端点自身默认。
+   */
+  thinking?:
+    | { type: 'enabled'; budget_tokens: number }
+    | { type: 'disabled' };
   /** Abort signal so a caller can cancel an in-flight stream. */
   signal?: AbortSignal;
   /** Invoked with each incremental text chunk as it streams in. */
@@ -108,6 +116,7 @@ export async function streamAnthropic(args: StreamArgs): Promise<string> {
     userImages,
     model,
     maxTokens,
+    thinking,
     signal,
     onDelta,
     onUsage,
@@ -116,6 +125,24 @@ export async function streamAnthropic(args: StreamArgs): Promise<string> {
   if (!canUseProviderDirectTransport(trimmedApiKey, baseUrl)) {
     throw new Error('NO_API_KEY');
   }
+  // Anthropic 要求 `max_tokens > thinking.budget_tokens`；预算高于上限时直接
+  // 400。这里把预算夹到合法区间，并把 max_tokens 抬到预算之上，避免「选了档位
+  // 就报错」这种最差体验。
+  const requestedMaxTokens = maxTokens ?? 4096;
+  const thinkingField =
+    thinking?.type === 'enabled'
+      ? {
+          type: 'enabled' as const,
+          budget_tokens: Math.max(
+            1024,
+            Math.min(thinking.budget_tokens, Math.max(1024, requestedMaxTokens - 1024)),
+          ),
+        }
+      : thinking;
+  const effectiveMaxTokens =
+    thinkingField?.type === 'enabled'
+      ? Math.max(requestedMaxTokens, thinkingField.budget_tokens + 1024)
+      : requestedMaxTokens;
 
   const userMessageContent = anthropicUserContent(userContent, userImages);
   const headers: Record<string, string> = {
@@ -131,8 +158,9 @@ export async function streamAnthropic(args: StreamArgs): Promise<string> {
     headers,
     body: JSON.stringify({
       model: model ?? DEFAULT_MODEL,
-      max_tokens: maxTokens ?? 4096,
+      max_tokens: effectiveMaxTokens,
       stream: true,
+      ...(thinkingField ? { thinking: thinkingField } : {}),
       system,
       messages: [{ role: 'user', content: userMessageContent }],
     }),

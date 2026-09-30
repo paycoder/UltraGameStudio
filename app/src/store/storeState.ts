@@ -194,6 +194,21 @@ export interface StoreState {
   promptGroups: PromptGroup[];
   locale: Locale;
   promptAutoTranslate: boolean;
+  /**
+   * Whether the composer's inline tool buttons (提及文件 / 组织架构 / 知识库)
+   * are shown. Default false — they are opt-in from 设置 → 常规.
+   */
+  composerToolButtonsVisible: boolean;
+  /**
+   * Whether the composer's 思考深度 (thinking level) selector is shown. Default
+   * true — levels come from protocol + model-family detection.
+   */
+  thinkingLevelsEnabled: boolean;
+  /**
+   * 手写的档位覆盖规则（每行 `模型匹配=档位列表`），用于私有网关的档位词汇
+   * 与公开接口不一致的情况。空串 = 完全自动判定。
+   */
+  thinkingLevelOverrides: string;
   personalInstructionsByModel: PersonalInstructionsByModel;
   personalInstructions: string;
   gameExpertSettings: GameExpertSettings;
@@ -267,6 +282,9 @@ export interface StoreState {
   initHistory: () => void;
   setLocale: (locale: Locale) => void;
   setPromptAutoTranslate: (enabled: boolean) => void;
+  setComposerToolButtonsVisible: (visible: boolean) => void;
+  setThinkingLevelsEnabled: (enabled: boolean) => void;
+  setThinkingLevelOverrides: (raw: string) => void;
   setPersonalInstructions: (
     instructions: string,
     selection?: GatewaySelection | null,

@@ -12,14 +12,20 @@ import {
 } from '@/lib/appearance';
 import { loadAppearance, saveAppearance } from '@/lib/appearanceStorage';
 import {
+  loadComposerToolButtonsVisible,
   loadGameExpertSettings,
   loadLocale,
   loadPersonalInstructionsByModel,
   loadPromptAutoTranslate,
+  loadThinkingLevelOverrides,
+  loadThinkingLevelsEnabled,
+  saveComposerToolButtonsVisible,
   saveGameExpertSettings,
   saveLocale,
   savePersonalInstructionsByModel,
   savePromptAutoTranslate,
+  saveThinkingLevelOverrides,
+  saveThinkingLevelsEnabled,
 } from '@/lib/composerStorage';
 import { normalizeGameExpertSettings, type GameExpertSettings } from '@/lib/gameExperts';
 import type { Locale } from '@/lib/i18n';
@@ -49,6 +55,9 @@ import type { ComposerSettings } from './types';
 type SimpleSettingsPersist = {
   locale: Locale;
   promptAutoTranslate: boolean;
+  composerToolButtonsVisible: boolean;
+  thinkingLevelsEnabled: boolean;
+  thinkingLevelOverrides: string;
   gameExpertSettings: GameExpertSettings;
   appearance: AppearanceSettings;
 };
@@ -58,6 +67,18 @@ const settingsPersist = definePersistedFields<SimpleSettingsPersist>({
   promptAutoTranslate: {
     load: loadPromptAutoTranslate,
     save: savePromptAutoTranslate,
+  },
+  composerToolButtonsVisible: {
+    load: loadComposerToolButtonsVisible,
+    save: saveComposerToolButtonsVisible,
+  },
+  thinkingLevelsEnabled: {
+    load: loadThinkingLevelsEnabled,
+    save: saveThinkingLevelsEnabled,
+  },
+  thinkingLevelOverrides: {
+    load: loadThinkingLevelOverrides,
+    save: saveThinkingLevelOverrides,
   },
   gameExpertSettings: {
     load: loadGameExpertSettings,
@@ -77,12 +98,18 @@ export type SettingsSlice = Pick<
   StoreState,
   | 'locale'
   | 'promptAutoTranslate'
+  | 'composerToolButtonsVisible'
+  | 'thinkingLevelsEnabled'
+  | 'thinkingLevelOverrides'
   | 'personalInstructionsByModel'
   | 'personalInstructions'
   | 'gameExpertSettings'
   | 'appearance'
   | 'setLocale'
   | 'setPromptAutoTranslate'
+  | 'setComposerToolButtonsVisible'
+  | 'setThinkingLevelsEnabled'
+  | 'setThinkingLevelOverrides'
   | 'setPersonalInstructions'
   | 'setGameExpertSettings'
   | 'setStylePresetId'
@@ -95,6 +122,9 @@ export type SettingsSliceSeeds = Pick<
   SettingsSlice,
   | 'locale'
   | 'promptAutoTranslate'
+  | 'composerToolButtonsVisible'
+  | 'thinkingLevelsEnabled'
+  | 'thinkingLevelOverrides'
   | 'personalInstructionsByModel'
   | 'personalInstructions'
   | 'gameExpertSettings'
@@ -150,6 +180,9 @@ export function loadSettingsSliceSeeds(
   return {
     locale,
     promptAutoTranslate: simple.promptAutoTranslate,
+    composerToolButtonsVisible: simple.composerToolButtonsVisible,
+    thinkingLevelsEnabled: simple.thinkingLevelsEnabled,
+    thinkingLevelOverrides: simple.thinkingLevelOverrides,
     personalInstructionsByModel,
     personalInstructions,
     gameExpertSettings: simple.gameExpertSettings,
@@ -165,6 +198,9 @@ export function createSettingsSlice(
   return {
     locale: seeds.locale,
     promptAutoTranslate: seeds.promptAutoTranslate,
+    composerToolButtonsVisible: seeds.composerToolButtonsVisible,
+    thinkingLevelsEnabled: seeds.thinkingLevelsEnabled,
+    thinkingLevelOverrides: seeds.thinkingLevelOverrides,
     personalInstructionsByModel: seeds.personalInstructionsByModel,
     personalInstructions: seeds.personalInstructions,
     gameExpertSettings: seeds.gameExpertSettings,
@@ -178,6 +214,21 @@ export function createSettingsSlice(
     setPromptAutoTranslate: (enabled) => {
       set({ promptAutoTranslate: enabled });
       settingsPersist.promptAutoTranslate.save(enabled);
+    },
+
+    setComposerToolButtonsVisible: (visible) => {
+      set({ composerToolButtonsVisible: visible });
+      settingsPersist.composerToolButtonsVisible.save(visible);
+    },
+
+    setThinkingLevelsEnabled: (enabled) => {
+      set({ thinkingLevelsEnabled: enabled });
+      settingsPersist.thinkingLevelsEnabled.save(enabled);
+    },
+
+    setThinkingLevelOverrides: (raw) => {
+      set({ thinkingLevelOverrides: raw });
+      settingsPersist.thinkingLevelOverrides.save(raw);
     },
 
     setPersonalInstructions: (instructions, selection) => {

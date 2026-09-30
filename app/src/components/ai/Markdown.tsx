@@ -4,6 +4,7 @@ import {
   useRef,
   isValidElement,
   cloneElement,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
   type ReactNode,
 } from 'react';
@@ -42,6 +43,8 @@ import {
   VisibleFileChip,
   type OpenFileFn,
 } from './FileChip';
+import type { FileActionItem } from './FileActionsMenu';
+import { useFileActionsMenu } from './useFileActionsMenu';
 import { claimFileChipSlot, useFileChipBudget } from './lib/fileChipBudget';
 import { isModelUrl } from './lib/modelLink';
 import { createImagePreviewRef } from './lib/imagePreview';
@@ -49,6 +52,89 @@ import {
   highlightSearchMarks,
   type SearchHighlightState,
 } from './lib/searchHighlight';
+import { Eye, FolderOpen, FolderTree } from 'lucide-react';
+import { useStore } from '@/store/useStore';
+import { t } from '@/lib/i18n';
+
+const imageMenuIconClass = 'shrink-0 text-fg-faint';
+
+/**
+ * A markdown image is a clickable file reference too: `![](E:\…\shot.png)` is
+ * exactly how pasted and generated images reach the transcript. Right-clicking
+ * it offers the same "open containing folder" / "reveal in folder" actions as a
+ * file chip, so the image can be located on disk without opening the preview
+ * drawer first. Remote and data: sources have no folder to jump to, so they
+ * keep only the preview action.
+ */
+function MarkdownImage({
+  source,
+  alt,
+  onOpenFile,
+}: {
+  source: string;
+  alt: string;
+  onOpenFile?: OpenFileFn;
+}) {
+  const locale = useStore((s) => s.locale);
+  const { open, element } = useFileActionsMenu();
+
+  const image = (
+    <img
+      src={source}
+      alt={alt}
+      loading="lazy"
+      className="ai-generated-image"
+    />
+  );
+  if (!source || !onOpenFile) return image;
+
+  const previewRef = createImagePreviewRef(source, alt || undefined);
+  const localFile = !/^(?:https?:\/\/|data:)/i.test(source);
+
+  const openContextMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const items: FileActionItem[] = [
+      {
+        key: 'preview-in-app',
+        label: t(locale, 'chat.previewInApp'),
+        icon: <Eye size={13} className={imageMenuIconClass} />,
+        onSelect: () => void onOpenFile(previewRef),
+      },
+    ];
+    if (localFile) {
+      items.push(
+        {
+          key: 'open-containing-folder',
+          label: t(locale, 'chat.openContainingFolder'),
+          icon: <FolderTree size={13} className={imageMenuIconClass} />,
+          onSelect: () =>
+            void onOpenFile(previewRef, { openContainingFolder: true }),
+        },
+        {
+          key: 'reveal-in-folder',
+          label: t(locale, 'chat.reveal'),
+          icon: <FolderOpen size={13} className={imageMenuIconClass} />,
+          onSelect: () => void onOpenFile(previewRef, { reveal: true }),
+        },
+      );
+    }
+    open(event, items);
+  };
+
+  return (
+    <span className="relative inline-flex max-w-full align-baseline">
+      <button
+        type="button"
+        className="ai-generated-image-trigger"
+        title={`在右侧预览\n${t(locale, 'chat.revealHint')}`}
+        onClick={() => void onOpenFile(previewRef)}
+        onContextMenu={openContextMenu}
+      >
+        {image}
+      </button>
+      {element}
+    </span>
+  );
+}
 
 function markdownUrlTransform(url: string, key: string): string | null | undefined {
   if (
@@ -71,6 +157,13 @@ function markdownUrlTransform(url: string, key: string): string | null | undefin
   }
   if (key === 'href' && isModelUrl(url)) return url;
   if (key === 'href' && /^data:text\/plain;base64,/i.test(url)) return url;
+  // `file:///E:/…/report.md` 是 AI 指明本地交付物的常见写法（生成的 md / HTML /
+  // 文档）。defaultUrlTransform 只放行 http/https/irc/mailto/xmpp，file: 会被清成
+  // ""，SmartLink 于是把整条链接降级成带下划线的装饰性 <span>：看起来像链接，点
+  // 下去毫无反应——正是"交付物点了没反应"的主因。这里保留原样，让 parseFileRef
+  // （内部自己会剥掉 file:// 前缀并解码 %XX）把它变成真正可点的 FileChip。
+  // 上面的 isModelUrl 分支只覆盖 .glb/.zip 等模型资产，.md/.html/.pdf 全靠这条。
+  if (key === 'href' && /^file:\/\//i.test(url)) return url;
   // Windows drive-letter paths (E:\…) and UNC paths (\\host\…) look like
   // unknown-protocol URLs to defaultUrlTransform, which sanitises them to
   // "". When the AI wraps a clipboard-image path in a markdown link
@@ -455,27 +548,13 @@ function MarkdownImpl({
       return <blockquote>{children}</blockquote>;
     },
     img: ({ src, alt }) => {
-      const image = (
-        <img
-          src={src}
-          alt={alt ?? ''}
-          loading="lazy"
-          className="ai-generated-image"
-        />
-      );
       const source = typeof src === 'string' ? src : '';
-      const openImage = ctxRef.current.onOpenFile;
-      if (!source || !openImage) return image;
-
       return (
-        <button
-          type="button"
-          className="ai-generated-image-trigger"
-          title="在右侧预览"
-          onClick={() => void openImage(createImagePreviewRef(source, alt ?? undefined))}
-        >
-          {image}
-        </button>
+        <MarkdownImage
+          source={source}
+          alt={alt ?? ''}
+          onOpenFile={ctxRef.current.onOpenFile}
+        />
       );
     },
   };

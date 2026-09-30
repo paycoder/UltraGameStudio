@@ -140,6 +140,13 @@ import {
 import type { SelectOption } from "@/store/types";
 import { cacheTtlOptions, startupModeOptions } from "@/store/sampleSessions";
 import {
+  THINKING_LEVEL_DEFAULT_ID,
+  declaredLevelsFor,
+  parseThinkingLevelOverrides,
+  thinkingDefault,
+  thinkingLevelOptions,
+} from "@/lib/thinkingLevels";
+import {
   LANGUAGE_SELECT_OPTIONS,
   localizeSelectOption,
   t,
@@ -291,6 +298,7 @@ import type { FileRef } from "@/components/ai/lib/filePath";
 import {
   displayFileRefLabel,
   isImageFileRef,
+  parentDirectoryPath,
 } from "@/components/ai/lib/filePath";
 import { scanFileRefs } from "@/components/ai/lib/fileScan";
 import { orderDisplayMessages } from "@/components/ai/lib/orderDisplayMessages";
@@ -334,6 +342,12 @@ const INITIAL_MESSAGE_WINDOW = 5;
 const BACKGROUND_MESSAGE_WINDOW_TARGET = 80;
 const BACKGROUND_MESSAGE_WINDOW_PAGE = 15;
 const MESSAGE_WINDOW_PAGE = 80;
+/**
+ * Frames spent re-pinning a bottom-restored session while the message window
+ * and lazy markdown upgrade (see scheduleBottomAlignment).
+ */
+const STREAM_BOTTOM_REALIGN_ATTEMPTS = 8;
+const STREAM_BOTTOM_REALIGN_DELAY_MS = 32;
 const TIMELINE_SUMMARY_LIMIT = 40;
 /** Fixed height of the bottom input area in 'chat' layout (return fills the rest). */
 const CHAT_INPUT_HEIGHT = 300;
@@ -1897,6 +1911,14 @@ export default function AIDock({
   const [shortcutSettings, setShortcutSettingsState] =
     useState(loadShortcutSettings);
   const gameExpertSettings = useStore((s) => s.gameExpertSettings);
+  // 「提及文件 / 组织架构 / 知识库」三个入口默认隐藏，设置 → 常规 里可打开。
+  const composerToolButtonsVisible = useStore(
+    (s) => s.composerToolButtonsVisible,
+  );
+  // 思考深度选择器：默认显示（档位按协议 + 模型族自动判定），可在设置 → 常规
+  // 里整体隐藏，或用覆盖文本手写档位集合。
+  const thinkingLevelsEnabled = useStore((s) => s.thinkingLevelsEnabled);
+  const thinkingLevelOverrides = useStore((s) => s.thinkingLevelOverrides);
   const setComposer = useStore((s) => s.setComposer);
   const setComposerDraft = useStore((s) => s.setComposerDraft);
   const permissionOptions = useStore((s) => s.permissionOptions);
@@ -2041,11 +2063,43 @@ export default function AIDock({
   const streamScrollSnapshotsRef = useRef(
     new Map<string, StreamScrollSnapshot>(),
   );
+  /**
+   * Scroll offsets this component wrote itself: session restore, bottom re-pin
+   * and message-window growth compensation. Such a write always produces a
+   * scroll event, and by the time the browser delivers it lazy markdown may
+   * already have grown the content — so re-deriving `atBottom` from that event
+   * reads "the user scrolled away from the bottom" when in fact the viewport
+   * never moved by a user gesture. Because that flag is sticky (the restore and
+   * the ResizeObserver only re-pin while it is true), one such event used to
+   * latch a bottom-pinned conversation as manually scrolled and leave its
+   * scrollbar stranded in the middle after switching back to it. Recording the
+   * offsets we wrote lets `handleStreamScroll` tell our own writes apart from a
+   * genuine user scroll (wheel, drag, keyboard or our smooth jump helpers).
+   */
+  const programmaticScrollTopsRef = useRef<number[]>([]);
+  const markProgrammaticStreamScroll = useCallback(
+    (stream: HTMLElement | null, before: number) => {
+      if (!stream) return;
+      // A write that did not move the viewport generates no scroll event, so
+      // remembering it could only ever swallow a later genuine user scroll that
+      // happens to land on the same offset.
+      if (Math.abs(stream.scrollTop - before) <= 0.5) return;
+      const marks = programmaticScrollTopsRef.current;
+      marks.push(stream.scrollTop);
+      if (marks.length > 8) marks.shift();
+    },
+    [],
+  );
   const activeStreamScrollKey = useMemo(
     () => streamScrollKey(layout, activeWorkspaceId, activeSessionId),
     [activeSessionId, activeWorkspaceId, layout],
   );
   const activeStreamScrollKeyRef = useRef(activeStreamScrollKey);
+  if (activeStreamScrollKeyRef.current !== activeStreamScrollKey) {
+    // Marks are offsets, and an offset from the previous session must never
+    // swallow the new session's first user scroll.
+    programmaticScrollTopsRef.current.length = 0;
+  }
   activeStreamScrollKeyRef.current = activeStreamScrollKey;
   const pendingStreamScrollRestoreKeyRef = useRef<string | null>(
     activeStreamScrollKey,
@@ -3545,6 +3599,92 @@ export default function AIDock({
           selectedDefaultProvider.provider,
         ))
       : runSelection.modelClass || "default";
+  // 思考深度档位由 `thinkingLevelOptions` 按「协议通道 + 模型族」给出，只列出
+  // 该接口真正支持的等级：claude-code 5 档、codex 6 档、DeepSeek 官方 4 档、
+  // 第三方兼容网关按模型族（deepseek / claude / gpt-5 / gemini / grok / qwen /
+  // glm …）各取其真实档位，未识别模型给通用三档。明确不推理的模型返回空数组。
+  //
+  // 「默认（不指定）」不是一句含糊的「用渠道默认」：`thinkingDefault` 会算出
+  // 它真正等价于哪一档（claude CLI 按模型目录的 `default_effort` 实测值），
+  // 能判定就在该档位上打「模型默认档」标记，判不了就把原因写明（CLI 自定 /
+  // 网关默认不推理 / 端点自定），避免用户对着「默认」猜。
+  const thinkingUi = useMemo<{
+    options: SelectOption[];
+    defaultHint: string;
+  }>(() => {
+    const provider = selectedDefaultProvider?.provider;
+    const model =
+      runSelection.modelOverride ??
+      (provider
+        ? providerDisplayModel(runSelection.modelClass, provider)
+        : runSelection.modelClass);
+    // 直连渠道用真实协议（anthropic / openai-compatible）解析档位，CLI 渠道才
+    // 按适配器解析——这样选择器列出的档位与请求真正走的那条通道一致。
+    const transport =
+      provider?.transport === "direct"
+        ? provider?.kind === "anthropic"
+          ? "anthropic"
+          : "openai-compatible"
+        : "cli";
+    const source = {
+      adapter: selectedAdapter,
+      baseUrl: provider?.baseUrl ?? "",
+      model,
+      transport,
+      declaredLevels: declaredLevelsFor(
+        model,
+        parseThinkingLevelOverrides(thinkingLevelOverrides),
+      ),
+    };
+    const fallback = thinkingDefault(source);
+    const levels = thinkingLevelOptions(source);
+    const labelById = new Map(
+      levels.map((option) => [option.id, t(locale, option.labelKey)]),
+    );
+    // 默认档必须真的在本次可选集合里，否则不标（换渠道/换模型后可能不再支持）。
+    const defaultLevelId =
+      fallback.level && labelById.has(fallback.level) ? fallback.level : null;
+    const options: SelectOption[] = levels.map((option) => {
+      const hint = t(locale, option.hintKey);
+      return {
+        id: option.id,
+        label: t(locale, option.labelKey),
+        hint:
+          option.id === defaultLevelId
+            ? `${t(locale, "dock.thinkingLevelDefaultMark")} · ${hint}`
+            : hint,
+      };
+    });
+    const defaultHint = defaultLevelId
+      ? `${t(locale, "dock.thinkingDefaultModel")} · ${t(
+          locale,
+          "dock.thinkingDefaultActual",
+        )}${labelById.get(defaultLevelId) ?? defaultLevelId}`
+      : t(locale, fallback.hintKey);
+    return { options, defaultHint };
+  }, [
+    locale,
+    selectedAdapter,
+    selectedDefaultProvider,
+    runSelection.modelOverride,
+    runSelection.modelClass,
+    thinkingLevelOverrides,
+  ]);
+  // 换渠道/换模型后上一个档位可能不再合法，此时显示「默认」——与实际下发的一致。
+  const thinkingValue =
+    runSelection.thinkingLevel &&
+    thinkingUi.options.some((option) => option.id === runSelection.thinkingLevel)
+      ? runSelection.thinkingLevel
+      : THINKING_LEVEL_DEFAULT_ID;
+  const handleThinkingChange = useCallback(
+    (id: string) => {
+      setSessionRunSelection({
+        ...runSelection,
+        thinkingLevel: id === THINKING_LEVEL_DEFAULT_ID ? undefined : id,
+      });
+    },
+    [runSelection, setSessionRunSelection],
+  );
   const [keyModalChannel, setKeyModalChannel] = useState<FreeChannel | null>(
     null,
   );
@@ -4261,6 +4401,15 @@ export default function AIDock({
         });
         return;
       }
+      if (intent?.openContainingFolder) {
+        // Jump to the folder itself rather than selecting the file inside it.
+        // A bare filename has no parent of its own, so fall back to the
+        // workspace root; when neither exists there is nothing to open.
+        const parent = parentDirectoryPath(ref.path) || workspaceCwd;
+        if (!parent) return;
+        void openLocalPath(parent, { cwd: workspaceCwd || undefined });
+        return;
+      }
       if (
         requestProjectRightPanelFilePreview({
           ref,
@@ -4277,8 +4426,11 @@ export default function AIDock({
 
   // Image paths typed or pasted into the composer are just plain text
   // inside the <textarea>, so they can't be clicked the way chips in a sent
-  // message can. Scan the draft for image refs and surface only those as a
-  // clickable strip below the input before the message is sent.
+  // message can. Scan the draft for image refs and surface them as a
+  // thumbnail-only strip below the input: one horizontal, scrollable row —
+  // a pasted screenshot path is ~90 chars, so rendering the path text next to
+  // each thumbnail stacked the strip into one image per row and filled the
+  // card. The tile still opens the preview drawer; its x removes the path.
   const draftFileRefs = useMemo<FileRef[]>(() => {
     const text = draft.trim();
     if (!text) return [];
@@ -4735,8 +4887,12 @@ export default function AIDock({
       });
     }
     const stream = streamRef.current;
-    if (stream) scrollStreamToBottom(stream);
-  }, []);
+    if (stream) {
+      const before = stream.scrollTop;
+      scrollStreamToBottom(stream);
+      markProgrammaticStreamScroll(stream, before);
+    }
+  }, [markProgrammaticStreamScroll]);
 
   // Timeline "jump to edge" buttons. Unlike pinActiveStreamToBottom (used on
   // send, instant scroll) these are user-triggered smooth scrolls, so they
@@ -4814,13 +4970,27 @@ export default function AIDock({
           ? current
           : { key: activeStreamScrollKey, size: next };
       });
+      const ownerKey = activeStreamScrollKey;
       window.requestAnimationFrame(() => {
+        // The scroll node is shared by every session, so a frame scheduled here
+        // can run after the user switched conversations — with the other
+        // session's content already in the DOM. `previousScrollHeight` then
+        // belongs to the session that asked for the growth, and applying the
+        // difference to whatever is mounted now both moves the wrong session's
+        // scrollbar and records that bogus position as the other session's
+        // remembered scroll state (which flips it away from "at bottom" and
+        // disables every later re-pin). Bail unless the node AND the owning
+        // session key are still the ones this growth was computed for.
         const nextStream = streamRef.current;
-        if (!nextStream || previousScrollHeight == null) return;
+        if (!nextStream || nextStream !== stream || previousScrollHeight == null)
+          return;
+        if (activeStreamScrollKeyRef.current !== ownerKey) return;
         const delta = nextStream.scrollHeight - previousScrollHeight;
         if (Number.isFinite(delta) && delta > 0) {
+          const before = nextStream.scrollTop;
           nextStream.scrollTop += delta;
-          rememberStreamScrollSnapshot();
+          markProgrammaticStreamScroll(nextStream, before);
+          rememberStreamScrollSnapshot(ownerKey);
         }
       });
     },
@@ -4874,7 +5044,9 @@ export default function AIDock({
       // remembered scroll position: snap to the bottom instead so the user
       // lands on whatever just finished/needs input, not a stale spot.
       if (consumeForceBottomScrollForSession(activeSessionId)) {
+        const before = stream.scrollTop;
         scrollStreamToBottom(stream);
+        markProgrammaticStreamScroll(stream, before);
         stickToBottomRef.current = true;
         streamScrollSnapshotsRef.current.set(key, {
           atBottom: true,
@@ -4888,10 +5060,82 @@ export default function AIDock({
       }
       const snapshot = streamScrollSnapshotsRef.current.get(key);
       stickToBottomRef.current = snapshot?.atBottom ?? true;
-      return restoreStreamScrollSnapshot(stream, messageRefs.current, snapshot);
+      const before = stream.scrollTop;
+      const restored = restoreStreamScrollSnapshot(
+        stream,
+        messageRefs.current,
+        snapshot,
+      );
+      markProgrammaticStreamScroll(stream, before);
+      return restored;
     },
-    [activeSessionId],
+    [activeSessionId, markProgrammaticStreamScroll],
   );
+
+  /**
+   * A session that was left pinned to the bottom is restored against the DOM as
+   * it exists in that commit — where the message window is still clamped and
+   * off-screen markdown is still a plain-text placeholder. Both grow right
+   * afterwards, so the "bottom" reached at restore time can sit far above the
+   * settled bottom. Re-pin for a bounded number of frames while the session is
+   * still bottom-pinned; the ResizeObserver covers anything later.
+   */
+  const bottomAlignRef = useRef<{
+    key: string;
+    stream: HTMLElement;
+    attempts: number;
+    frame: number | null;
+    timer: number | null;
+  } | null>(null);
+
+  const cancelBottomAlignment = useCallback(() => {
+    const pending = bottomAlignRef.current;
+    bottomAlignRef.current = null;
+    if (!pending) return;
+    if (pending.frame !== null) window.cancelAnimationFrame(pending.frame);
+    if (pending.timer !== null) window.clearTimeout(pending.timer);
+  }, []);
+
+  const scheduleBottomAlignment = useCallback(
+    (key: string) => {
+      cancelBottomAlignment();
+      const stream = streamRef.current;
+      if (!stream) return;
+      const state = {
+        key,
+        stream,
+        attempts: 0,
+        frame: null as number | null,
+        timer: null as number | null,
+      };
+      bottomAlignRef.current = state;
+      const align = () => {
+        state.frame = null;
+        state.timer = null;
+        if (bottomAlignRef.current !== state) return;
+        // Never re-pin a session the user already left.
+        if (activeStreamScrollKeyRef.current !== key) return;
+        if (streamRef.current !== stream) return;
+        if (!streamScrollSnapshotsRef.current.get(key)?.atBottom) return;
+        const before = stream.scrollTop;
+        scrollStreamToBottom(stream);
+        markProgrammaticStreamScroll(stream, before);
+        rememberStreamScrollSnapshot(key);
+        state.attempts += 1;
+        if (state.attempts < STREAM_BOTTOM_REALIGN_ATTEMPTS) {
+          state.timer = window.setTimeout(align, STREAM_BOTTOM_REALIGN_DELAY_MS);
+        }
+      };
+      state.frame = window.requestAnimationFrame(align);
+    },
+    [
+      cancelBottomAlignment,
+      markProgrammaticStreamScroll,
+      rememberStreamScrollSnapshot,
+    ],
+  );
+
+  useEffect(() => cancelBottomAlignment, [cancelBottomAlignment]);
 
   const updateActiveTopicFromScroll = useCallback(() => {
     const stream = streamRef.current;
@@ -4932,6 +5176,33 @@ export default function AIDock({
   // scroll pins this session to the visible message anchor; bottom stays sticky
   // and follows new streamed content.
   const handleStreamScroll = useCallback(() => {
+    const stream = streamRef.current;
+    const marks = programmaticScrollTopsRef.current;
+    const markIndex = stream
+      ? marks.findIndex((top) => Math.abs(top - stream.scrollTop) <= 1)
+      : -1;
+    if (markIndex !== -1) {
+      // We scrolled, not the user: refresh the recorded geometry but keep the
+      // session's pinned/unpinned intent exactly as it was.
+      marks.splice(markIndex, 1);
+      if (stream) {
+        const key = activeStreamScrollKeyRef.current;
+        const previous = streamScrollSnapshotsRef.current.get(key);
+        // No snapshot yet means this session never recorded an intent; a write
+        // we made for it (restore/pin/compensation) is bottom-following, so
+        // default to pinned — never to the previous session's flag.
+        const atBottom = previous?.atBottom ?? true;
+        streamScrollSnapshotsRef.current.set(key, {
+          ...readStreamScrollSnapshot(stream, messageRefs.current),
+          atBottom,
+        });
+        stickToBottomRef.current = atBottom;
+      }
+      updateActiveTopicFromScroll();
+      return;
+    }
+    // A real gesture overrides any write we had pending.
+    marks.length = 0;
     rememberStreamScrollSnapshot();
     updateActiveTopicFromScroll();
   }, [rememberStreamScrollSnapshot, updateActiveTopicFromScroll]);
@@ -5433,6 +5704,59 @@ export default function AIDock({
     [insertComposerText],
   );
 
+  // Deleting a thumbnail in the composer strip must delete the underlying path
+  // token from the draft, not just hide the tile: the path is what actually gets
+  // sent. Pasted paths arrive backtick-wrapped (formatFilePathInsertion), a
+  // manually typed or dropped one may be bare, and a `file:///` draft carries a
+  // form parseFileRef normalized away — so try the wrapper, the raw path, then
+  // the basename (only when it is unambiguous).
+  const removeComposerFileRef = useCallback(
+    (ref: FileRef) => {
+      if (isReadOnly) return;
+
+      const current = draftRef.current;
+      const candidates = [`\`${ref.path}\``, ref.path];
+      if (ref.basename && ref.basename !== ref.path) candidates.push(ref.basename);
+
+      let index = -1;
+      let length = 0;
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        const at = current.indexOf(candidate);
+        if (at === -1) continue;
+        if (candidate === ref.basename && current.indexOf(candidate, at + 1) !== -1) {
+          continue; // Ambiguous basename: never guess which occurrence to drop.
+        }
+        index = at;
+        length = candidate.length;
+        break;
+      }
+      if (index === -1) return;
+
+      let start = index;
+      let end = index + length;
+      // Swallow the newline the path list left behind so removing the last
+      // preview does not leave a blank line in the draft.
+      if (current[end] === "\n") end += 1;
+      else if (start > 0 && current[start - 1] === "\n") start -= 1;
+
+      const next = current.slice(0, start) + current.slice(end);
+      const caret = clampSelection(start, next.length);
+
+      draftRef.current = next;
+      selectionRef.current = { start: caret, end: caret };
+      setComposerDraft(next);
+
+      window.requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!(el instanceof HTMLTextAreaElement)) return;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    },
+    [isReadOnly, setComposerDraft],
+  );
+
   const startFileMention = useCallback(() => {
     if (isReadOnly) return;
     fileMentionInsertModeRef.current = "mention";
@@ -5806,11 +6130,13 @@ export default function AIDock({
         const stream = streamRef.current;
         const top = searchScrollTopRef.current;
         if (!stream || top === null) return;
+        const before = stream.scrollTop;
         stream.scrollTop = top;
+        markProgrammaticStreamScroll(stream, before);
         searchScrollTopRef.current = null;
       });
     }
-  }, [normalizedSearch]);
+  }, [markProgrammaticStreamScroll, normalizedSearch]);
 
   // Session/workspace switches restore that conversation's own scroll state:
   // bottom remains sticky, while a manual non-bottom position is restored by
@@ -5825,36 +6151,28 @@ export default function AIDock({
       return;
     if (restoreStreamScrollSnapshotForKey(activeStreamScrollKey)) {
       pendingStreamScrollRestoreKeyRef.current = null;
-      // 首帧之后惰性富渲染 / 消息窗口增长仍可能继续改变容器高度。恢复不能
-      // 依赖 ResizeObserver 的异步修正（它可能错过或滞后于内容高度变化），
-      // 所以下一帧再对齐一次，保证底部钉住的会话始终停在真正的最底部。
-      const key = activeStreamScrollKey;
-      let timer: number | null = null;
-      const alignBottom = () => {
-        if (activeStreamScrollKeyRef.current !== key) return;
-        const stream = streamRef.current;
-        if (!stream) return;
-        const snapshot = streamScrollSnapshotsRef.current.get(key);
-        if (snapshot?.atBottom) {
-          scrollStreamToBottom(stream);
-          rememberStreamScrollSnapshot(key);
-        }
-      };
-      const frame = window.requestAnimationFrame(() => {
-        alignBottom();
-        timer = window.setTimeout(alignBottom, 20);
-      });
-      return () => {
-        window.cancelAnimationFrame(frame);
-        if (timer !== null) window.clearTimeout(timer);
-      };
+      // 首帧恢复只面对那一帧的 DOM：消息窗口还是收缩的、离屏 Markdown 还是
+      // 纯文本占位，两者随后都会长高，所以恢复时的“底部”可能远高于真正的底部。
+      // 这里安排一个跨帧的重新对齐（见 scheduleBottomAlignment），由它负责
+      // 补齐这段增长，而不是只赌一次 ResizeObserver。
+      scheduleBottomAlignment(activeStreamScrollKey);
     }
+    return () => {
+      // 同一个会话内的重跑（消息窗口增长 / 新消息）必须保留正在进行的底部
+      // 对齐；只有真正换了会话才取消它。会话切换时 activeStreamScrollKeyRef
+      // 已经在渲染阶段更新为新 key，所以这里能区分两种情况。
+      if (activeStreamScrollKeyRef.current !== activeStreamScrollKey) {
+        cancelBottomAlignment();
+      }
+    };
   }, [
     activeStreamScrollKey,
     hiddenMessageCount,
     messages.length,
     rememberStreamScrollSnapshot,
     restoreStreamScrollSnapshotForKey,
+    scheduleBottomAlignment,
+    cancelBottomAlignment,
   ]);
 
   useLayoutEffect(() => {
@@ -5870,7 +6188,9 @@ export default function AIDock({
     const stream = streamRef.current;
     if (!stream) return;
 
+    const before = stream.scrollTop;
     scrollStreamToBottom(stream);
+    markProgrammaticStreamScroll(stream, before);
     stickToBottomRef.current = true;
     streamScrollSnapshotsRef.current.set(activeStreamScrollKeyRef.current, {
       atBottom: true,
@@ -5881,7 +6201,7 @@ export default function AIDock({
       anchorOffsetTop: 0,
     });
     forceNextMessageBottomRef.current = null;
-  }, [activeStreamScrollKey, messages.length]);
+  }, [activeStreamScrollKey, markProgrammaticStreamScroll, messages.length]);
 
   // Keep the latest message in view unless return search is active or the user
   // has scrolled away from the bottom. `stickToBottomRef` is updated by the
@@ -5901,12 +6221,19 @@ export default function AIDock({
     const syncScrollAfterLayout = () => {
       if (normalizedSearchRef.current) return;
       if (searchScrollTopRef.current !== null) return;
+      // Re-read the node and the key at fire time: this callback is async, so
+      // the session it was created for may already be gone.
+      if (streamRef.current !== el) return;
       const key = activeStreamScrollKeyRef.current;
       const snapshot = streamScrollSnapshotsRef.current.get(key);
       if (snapshot?.atBottom ?? stickToBottomRef.current) {
+        const before = el.scrollTop;
         scrollStreamToBottom(el);
+        markProgrammaticStreamScroll(el, before);
       } else if (snapshot) {
+        const before = el.scrollTop;
         restoreStreamScrollSnapshot(el, messageRefs.current, snapshot);
+        markProgrammaticStreamScroll(el, before);
       }
       rememberStreamScrollSnapshot(key);
     };
@@ -5923,7 +6250,10 @@ export default function AIDock({
     const content = streamContentRef.current;
     if (content) ro.observe(content);
     return () => ro.disconnect();
-  }, [rememberStreamScrollSnapshot, messages.length]);
+    // Rebind per session: the observed nodes are replaced whenever the message
+    // count changes, and a same-count switch must not keep the previous
+    // session's observation closure around.
+  }, [activeStreamScrollKey, markProgrammaticStreamScroll, rememberStreamScrollSnapshot, messages.length]);
 
   useEffect(() => {
     if (
@@ -8820,13 +9150,17 @@ export default function AIDock({
           </div>
         </div>
 
+        {/* `z-30`：卡片带 backdrop-filter（global.css 的 .ugs-ai-input-card），
+            本身就是一个层叠上下文，里面下拉菜单的 z-index 压不过 DOM 靠后的
+            兄弟面板（右栏「会话文件」）。给卡片一个正的 z-index，菜单才能画在
+            面板之上而不被切断。 */}
         <div
           ref={inputDropRef}
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
           className={
-            "ugs-ai-input-card relative flex min-h-0 flex-1 flex-col rounded-lg border transition-colors focus-within:border-accent " +
+            "ugs-ai-input-card relative z-30 flex min-h-0 flex-1 flex-col rounded-lg border transition-colors focus-within:border-accent " +
             (centerInput ? "min-h-[14rem] " : "") +
             (dropActive
               ? "ugs-ai-input--drop border-accent "
@@ -9107,7 +9441,7 @@ export default function AIDock({
           {draftFileRefs.length > 0 && (
             <div
               data-testid="composer-file-refs"
-              className="flex flex-wrap items-center gap-1 px-2 pb-1"
+              className="flex flex-row flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain px-2 pb-1"
             >
               <FileChipBudgetProvider>
                 {draftFileRefs.map((ref) => (
@@ -9116,6 +9450,8 @@ export default function AIDock({
                     refData={ref}
                     onOpenFile={onOpenFile}
                     cwd={workspaceCwd}
+                    thumbnailOnly
+                    onRemove={() => removeComposerFileRef(ref)}
                   />
                 ))}
               </FileChipBudgetProvider>
@@ -9232,64 +9568,70 @@ export default function AIDock({
               <span className="font-mono text-sm font-semibold">#</span>
               <span>{t(locale, "dock.hintGameSkill")}</span>
             </button>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={startFileMention}
-              disabled={isReadOnly}
-              title={t(locale, "dock.hintMention")}
-              aria-label={t(locale, "dock.hintMention")}
-              className={cn(composerToolButtonClass, "gap-1 font-medium")}
-            >
-              <span className="font-mono text-sm font-semibold">@</span>
-              <span>{t(locale, "dock.hintMentionShort")}</span>
-            </button>
-            {isChat && (
-              <button
-                type="button"
-                data-org-panel-trigger
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setOrgPanelOpen((open) => !open)}
-                aria-pressed={orgPanelOpen}
-                title={t(locale, "dock.tabOrganization")}
-                aria-label={t(locale, "dock.tabOrganization")}
-                className={cn(
-                  composerToolButtonClass,
-                  "gap-1 font-medium",
-                  orgPanelOpen && "bg-border-soft/55 text-fg",
+            {/* 三个「进阶入口」按钮默认隐藏（见 store.composerToolButtonsVisible），
+                避免常驻挤占底部工具条；用户在 设置 → 常规 里打开后才渲染。 */}
+            {composerToolButtonsVisible && (
+              <>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={startFileMention}
+                  disabled={isReadOnly}
+                  title={t(locale, "dock.hintMention")}
+                  aria-label={t(locale, "dock.hintMention")}
+                  className={cn(composerToolButtonClass, "gap-1 font-medium")}
+                >
+                  <span className="font-mono text-sm font-semibold">@</span>
+                  <span>{t(locale, "dock.hintMentionShort")}</span>
+                </button>
+                {isChat && (
+                  <button
+                    type="button"
+                    data-org-panel-trigger
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setOrgPanelOpen((open) => !open)}
+                    aria-pressed={orgPanelOpen}
+                    title={t(locale, "dock.tabOrganization")}
+                    aria-label={t(locale, "dock.tabOrganization")}
+                    className={cn(
+                      composerToolButtonClass,
+                      "gap-1 font-medium",
+                      orgPanelOpen && "bg-border-soft/55 text-fg",
+                    )}
+                  >
+                    <span className="font-mono text-sm font-semibold">$</span>
+                    <span>{t(locale, "dock.tabOrganization")}</span>
+                  </button>
                 )}
-              >
-                <span className="font-mono text-sm font-semibold">$</span>
-                <span>{t(locale, "dock.tabOrganization")}</span>
-              </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    setComposer({
+                      knowledgeBaseMode: !composer.knowledgeBaseMode,
+                    })
+                  }
+                  disabled={isReadOnly}
+                  aria-pressed={composer.knowledgeBaseMode}
+                  title={t(
+                    locale,
+                    composer.knowledgeBaseMode
+                      ? "dock.knowledgeBaseOnTitle"
+                      : "dock.knowledgeBaseOffTitle",
+                  )}
+                  aria-label={t(locale, "dock.knowledgeBaseLabel")}
+                  className={cn(
+                    composerToolButtonClass,
+                    "gap-1 font-medium",
+                    composer.knowledgeBaseMode &&
+                      "border-accent/45 bg-accent/10 text-accent",
+                  )}
+                >
+                  <BookOpen size={14} strokeWidth={2.1} />
+                  <span>{t(locale, "dock.knowledgeBaseShort")}</span>
+                </button>
+              </>
             )}
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() =>
-                setComposer({
-                  knowledgeBaseMode: !composer.knowledgeBaseMode,
-                })
-              }
-              disabled={isReadOnly}
-              aria-pressed={composer.knowledgeBaseMode}
-              title={t(
-                locale,
-                composer.knowledgeBaseMode
-                  ? "dock.knowledgeBaseOnTitle"
-                  : "dock.knowledgeBaseOffTitle",
-              )}
-              aria-label={t(locale, "dock.knowledgeBaseLabel")}
-              className={cn(
-                composerToolButtonClass,
-                "gap-1 font-medium",
-                composer.knowledgeBaseMode &&
-                  "border-accent/45 bg-accent/10 text-accent",
-              )}
-            >
-              <BookOpen size={14} strokeWidth={2.1} />
-              <span>{t(locale, "dock.knowledgeBaseShort")}</span>
-            </button>
 
             {activeRemoteWorkspaceRoot ? (
               <>
@@ -9396,6 +9738,30 @@ export default function AIDock({
                   className="min-w-0 max-w-[14rem]"
                   icon={!generationMode && loadingChannelModels ? "↻" : "◇"}
                   variant="ghost"
+                />
+              )}
+              {!generationMode &&
+                thinkingLevelsEnabled &&
+                thinkingUi.options.length > 0 && (
+                <Select
+                  title={t(locale, "dock.thinkingTitle")}
+                  options={[
+                    {
+                      id: THINKING_LEVEL_DEFAULT_ID,
+                      label: t(locale, "dock.thinkingDefault"),
+                      hint: thinkingUi.defaultHint,
+                    },
+                    ...thinkingUi.options,
+                  ]}
+                  value={thinkingValue}
+                  onChange={handleThinkingChange}
+                  disabled={isReadOnly}
+                  className="min-w-0 max-w-[9rem]"
+                  icon="◐"
+                  variant="ghost"
+                  // 触发按钮只显示档位名；每个档位的说明留在下拉里，
+                  // 否则长说明会把窄触发条撑爆。
+                  showSelectedHint={false}
                 />
               )}
               <button

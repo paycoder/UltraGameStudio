@@ -12,6 +12,7 @@ import {
   ExternalLink,
   FileText,
   FileWarning,
+  FolderOpen,
   Globe2,
   Image as ImageIcon,
   Loader2,
@@ -718,6 +719,27 @@ export default function FilePreviewDrawer({
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
             >
               {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          )}
+          {file && canOpenExternally && (
+            <button
+              type="button"
+              onClick={() => {
+                // Jump straight to the folder that holds this file. The header
+                // path is otherwise only copyable text, so a deep asset or a
+                // generated artifact buried under .ultragamestudio/ could not be
+                // located on disk from inside the preview.
+                void openLocalPath(file.path, { reveal: true }).then((opened) => {
+                  if (!opened && typeof window !== 'undefined') {
+                    window.alert(`无法在文件管理器中定位该文件：\n${file.path}`);
+                  }
+                });
+              }}
+              title="在文件夹中显示"
+              aria-label="在文件夹中显示"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-panel-2 text-fg-dim transition-colors hover:border-accent hover:text-fg"
+            >
+              <FolderOpen size={14} />
             </button>
           )}
           {file && canOpenExternally && (

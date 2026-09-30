@@ -2556,7 +2556,9 @@ fn skill_install_root(
         "global-codex" => (
             "global-codex".to_string(),
             "全局 Codex Skills (~/.codex/skills)".to_string(),
-            home.join(".codex").join("skills"),
+            codex_user_home_dir()
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("skills"),
             false,
         ),
         "global-claude" => (
@@ -3464,8 +3466,22 @@ fn merge_mcp_servers_into_json(
     Ok(())
 }
 
+/// Root of the user's Codex home: `CODEX_HOME` when set (codex itself honours
+/// it, as does `cli_runtime::preferred_codex_path`), else `~/.codex`. Keeping
+/// UGS's config/MCP writes on the same root codex actually reads avoids the
+/// "UGS edited a file codex never opens" class of bug.
+fn codex_user_home_dir() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("CODEX_HOME") {
+        let trimmed = configured.to_string_lossy().trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    user_home_dir().map(|home| home.join(".codex"))
+}
+
 fn codex_mcp_config_path() -> Option<PathBuf> {
-    user_home_dir().map(|h| h.join(".codex").join("config.toml"))
+    codex_user_home_dir().map(|home| home.join("config.toml"))
 }
 
 /// Whether `~/.codex/config.toml` explicitly selects a non-default
@@ -3504,6 +3520,45 @@ fn codex_uses_named_model_provider() -> bool {
         return false;
     };
     codex_config_selects_named_provider(&text)
+}
+
+/// Env var UGS exports the selected channel's key under for Codex spawns.
+/// Overriding `model_providers.<provider>.env_key` to this name is what makes
+/// 设置 → 模型 the credential codex actually sends.
+const CODEX_CHANNEL_KEY_ENV: &str = "UGS_CODEX_CHANNEL_KEY";
+
+/// The non-default `model_provider` selected by a `config.toml`, or None.
+fn codex_selected_provider(config_toml: &str) -> Option<String> {
+    config_toml
+        .parse::<toml::Value>()
+        .ok()?
+        .get("model_provider")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "openai")
+        .map(str::to_owned)
+}
+
+/// The named provider whose credential slot UGS may override, if the user's
+/// `config.toml` selects a provider that is actually declared. `-c
+/// model_providers.<provider>.env_key=…` needs the table to exist, otherwise
+/// codex would resolve a provider with no `base_url`/`name`.
+fn codex_provider_for_credential_override(config_toml: &str) -> Option<String> {
+    let provider = codex_selected_provider(config_toml)?;
+    config_toml
+        .parse::<toml::Value>()
+        .ok()?
+        .get("model_providers")?
+        .get(&provider)?;
+    Some(provider)
+}
+
+/// Report the provider whose credential slot this spawn should override, having
+/// re-read the user's `config.toml` (same file `codex_config_selects_named_provider`
+/// resolves through `CODEX_HOME`).
+fn codex_provider_credential_override() -> Option<String> {
+    let text = std::fs::read_to_string(codex_mcp_config_path()?).ok()?;
+    codex_provider_for_credential_override(&text)
 }
 
 /// Codex 原生 MCP 配置写入 `~/.codex/config.toml` 的 `[mcp_servers.<name>]`。
@@ -14523,8 +14578,20 @@ fn run_cli_update_blocking(adapter: &str) -> Result<String, String> {
     // actually trigger an update (or, for gemini/dsh, a fresh install).
     let cmd = cli_update_command(spec, exe.as_deref())?;
 
-    let output = command_text_output_with_timeout(cmd, std::time::Duration::from_secs(180))
+    let outcome = command_outcome_with_timeout(cmd, std::time::Duration::from_secs(180))
         .map_err(|e| format!("更新 {} 失败：{e}", spec.label))?;
+
+    // The exit code used to be ignored entirely, so a failed
+    // `bun install -g` / `npm install -g` still reported "更新完成" and the real
+    // stderr was discarded. Fail loudly instead, and leave the cached "latest"
+    // value alone so the row keeps showing the pending update.
+    if !outcome.success {
+        return Err(format!(
+            "{} 更新失败：{}",
+            spec.label,
+            summarize_command_failure(&outcome)
+        ));
+    }
 
     // Invalidate the cached "latest" lookup so the very next check reflects
     // reality instead of waiting out the TTL.
@@ -14532,12 +14599,64 @@ fn run_cli_update_blocking(adapter: &str) -> Result<String, String> {
     cache.entries.remove(spec.npm_package);
     save_cli_version_cache(&cache);
 
-    Ok(output)
+    Ok(outcome.text)
+}
+
+/// True when `exe` lives in the Codex **desktop app**'s private runtime dir
+/// (`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`). That copy is owned by
+/// the app; `codex update`, `bun install -g` and `npm install -g` all rewrite a
+/// *different* install tree, which is why the settings panel kept reporting an
+/// available update no matter how many times the user clicked it.
+fn is_codex_desktop_app_path(exe: &str) -> bool {
+    let normalized = exe.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("/openai/codex/bin/")
+}
+
+/// True when `exe` is an npm global shim (`%APPDATA%\npm\codex.cmd` on Windows,
+/// `.../npm/codex` elsewhere) — that tree is owned by npm, so npm must update it.
+fn is_npm_global_shim_path(exe: &str) -> bool {
+    let normalized = exe.replace('\\', "/").to_ascii_lowercase();
+    let Some((parent, _file)) = normalized.rsplit_once('/') else {
+        return false;
+    };
+    parent.rsplit('/').next() == Some("npm")
+}
+
+fn codex_update_command(spec: &CliUpdateSpec, exe: &str) -> Result<Command, String> {
+    if is_codex_desktop_app_path(exe) {
+        return Err(format!(
+            "{} 当前使用的是 Codex 桌面应用自带的 CLI（{exe}），它由桌面应用自己管理，命令行更新改不动它。请在 Codex 桌面应用内检查更新，或把设置中的 Codex CLI 路径改指到 npm/bun 全局安装的 codex。",
+            spec.label
+        ));
+    }
+
+    // Update the detected install tree with the package manager that owns it,
+    // instead of letting `codex update` guess (it always shells out to bun).
+    let installer = if is_bun_global_shim_path(exe) {
+        Some(bun_command_for_shim(exe))
+    } else if is_npm_global_shim_path(exe) {
+        Some(npm_command_name().to_string())
+    } else {
+        None
+    };
+    if let Some(installer) = installer {
+        let mut c = spawn_cli_command(&installer);
+        c.arg("install")
+            .arg("-g")
+            .arg(format!("{}@latest", spec.npm_package));
+        return Ok(c);
+    }
+
+    // Unknown install source (custom path, vendor installer): fall back to the
+    // CLI's own updater.
+    let mut c = spawn_cli_command(exe);
+    c.arg("update");
+    Ok(c)
 }
 
 fn cli_update_command(spec: &CliUpdateSpec, exe: Option<&str>) -> Result<Command, String> {
     match spec.adapter {
-        "claude-code" | "codex" => {
+        "claude-code" => {
             let exe = exe.ok_or_else(|| {
                 format!(
                     "未检测到已安装的 {}，请先在设置中配置 CLI 路径。",
@@ -14547,6 +14666,15 @@ fn cli_update_command(spec: &CliUpdateSpec, exe: Option<&str>) -> Result<Command
             let mut c = spawn_cli_command(exe);
             c.arg("update");
             Ok(c)
+        }
+        "codex" => {
+            let exe = exe.ok_or_else(|| {
+                format!(
+                    "未检测到已安装的 {}，请先在设置中配置 CLI 路径。",
+                    spec.label
+                )
+            })?;
+            codex_update_command(spec, exe)
         }
         "gemini" | "kimi" | "deepseek-harness" | "zcode" | "grok" => {
             // `npm install -g <pkg>@latest` installs when missing and updates
@@ -15830,6 +15958,7 @@ fn append_codex_project_mcp_config_args(args: &mut Vec<String>, cwd: Option<&str
 
 static CLAUDE_BARE_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 static CLAUDE_STREAM_INPUT_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+static CLAUDE_EFFORT_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 static CODEX_APP_SERVER_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
 fn claude_help_supports_bare(help_text: &str) -> bool {
@@ -15838,6 +15967,11 @@ fn claude_help_supports_bare(help_text: &str) -> bool {
 
 fn claude_help_supports_stream_input(help_text: &str) -> bool {
     help_text.contains("--input-format") && help_text.contains("stream-json")
+}
+
+/// `--effort` 出现在较新的 claude CLI 上（低/中/高/极高/最高 五档）。
+fn claude_help_supports_effort(help_text: &str) -> bool {
+    help_text.contains("--effort")
 }
 
 fn shell_spec_cache_key(shell: &Option<ShellSpec>) -> String {
@@ -15853,10 +15987,21 @@ fn shell_spec_cache_key(shell: &Option<ShellSpec>) -> String {
         .unwrap_or_else(|| "direct".to_string())
 }
 
-fn command_text_output_with_timeout(
+/// Result of a probe/update subprocess: the captured streams plus the *real*
+/// exit status. `text` is kept as the historical `"{stdout}\n{stderr}"` blob for
+/// callers that only want text; update flows read `success`/`stderr` so a failed
+/// install can no longer masquerade as a successful one.
+struct CommandOutcome {
+    success: bool,
+    exit_code: Option<i32>,
+    text: String,
+    stderr: String,
+}
+
+fn command_outcome_with_timeout(
     mut cmd: Command,
     timeout: std::time::Duration,
-) -> Result<String, String> {
+) -> Result<CommandOutcome, String> {
     prepare_command_for_spawn(&mut cmd);
     let stdout_path = temp_output_path("ultragamestudio-cli-help-stdout", "txt");
     let stderr_path = temp_output_path("ultragamestudio-cli-help-stderr", "txt");
@@ -15875,9 +16020,9 @@ fn command_text_output_with_timeout(
         .map_err(|e| format!("启动 CLI 探测失败: {e}"))?;
 
     let deadline = std::time::Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     terminate_child_tree(&mut child);
@@ -15890,11 +16035,59 @@ fn command_text_output_with_timeout(
                 return Err(format!("等待 CLI 探测失败: {e}"));
             }
         }
-    }
+    };
 
     let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
     let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
-    Ok(format!("{stdout}\n{stderr}"))
+    Ok(CommandOutcome {
+        success: status.success(),
+        exit_code: status.code(),
+        text: format!("{stdout}\n{stderr}"),
+        stderr,
+    })
+}
+
+/// Human-readable one-liner for a failed subprocess: up to the last three
+/// non-empty stderr lines (npm/bun put the actionable error at the tail), else
+/// stdout, else just the exit code.
+fn summarize_command_failure(outcome: &CommandOutcome) -> String {
+    fn tail(text: &str) -> Vec<String> {
+        let lines: Vec<String> = text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_string())
+            .collect();
+        let start = lines.len().saturating_sub(3);
+        lines[start..].to_vec()
+    }
+
+    let mut lines = tail(&outcome.stderr);
+    if lines.is_empty() {
+        lines = tail(&outcome.text);
+    }
+    if lines.is_empty() {
+        return match outcome.exit_code {
+            Some(code) => format!("进程退出码 {code}，且无错误输出"),
+            None => "进程异常退出，且无错误输出".to_string(),
+        };
+    }
+    let mut detail = lines.join(" | ");
+    if detail.chars().count() > 600 {
+        detail = detail.chars().take(600).collect::<String>();
+        detail.push('…');
+    }
+    match outcome.exit_code {
+        Some(code) => format!("{detail}（退出码 {code}）"),
+        None => detail,
+    }
+}
+
+fn command_text_output_with_timeout(
+    cmd: Command,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    command_outcome_with_timeout(cmd, timeout).map(|outcome| outcome.text)
 }
 
 fn claude_cli_supports_bare(binary: &str, shell: &Option<ShellSpec>) -> bool {
@@ -15917,6 +16110,82 @@ fn claude_cli_supports_bare(binary: &str, shell: &Option<ShellSpec>) -> bool {
         cache.insert(key, supported);
     }
     supported
+}
+
+static KIMI_AGENT_FILE_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn kimi_help_supports_agent_file(help_text: &str) -> bool {
+    help_text.contains("--agent-file")
+}
+
+/// Whether this kimi-code build accepts `--agent-file`.
+///
+/// Probed once per binary: older builds have no such flag and would abort on an
+/// unknown option, so the headless-suppression profile is only injected when the
+/// help text advertises it. A failed probe (CLI missing, timeout) degrades to
+/// "not supported" — the turn still runs, just with kimi's own turn-ending
+/// question habit intact.
+fn kimi_cli_supports_agent_file(binary: &str, shell: &Option<ShellSpec>) -> bool {
+    let key = format!("{}\0{}", binary, shell_spec_cache_key(shell));
+    let cache = KIMI_AGENT_FILE_SUPPORT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some(supported) = cache.get(&key) {
+            return *supported;
+        }
+    }
+
+    let help_args = vec!["--help".to_string()];
+    let help_cmd = build_launch_command(binary, &help_args, shell);
+    let help_text = command_text_output_with_timeout(help_cmd, std::time::Duration::from_secs(8))
+        .unwrap_or_default();
+    let supported = kimi_help_supports_agent_file(&help_text);
+
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, supported);
+    }
+    supported
+}
+
+/// Agent definition injected via `--agent-file` on every kimi one-shot turn.
+///
+/// kimi-code always runs `--prompt` turns with its interactive questions
+/// auto-dismissed: `AskUserQuestion` returns "The connected client does not
+/// support interactive questions. Do NOT call this tool again. Ask the user
+/// directly in your text response instead." — so the model closes every turn
+/// with a prose question, UGS's fallback turns that into a widget, and one
+/// request becomes an endless Q&A loop. Taking the three interactive tools out
+/// of the table (and stating the rule in the prompt) closes it at the source.
+///
+/// `${base_prompt}` embeds kimi's effective default system prompt, so the
+/// environment / AGENTS.md / skills injections survive; the body below is only
+/// an addition. `disallowedTools` is enforced both when listing tools and
+/// before execution.
+const KIMI_HEADLESS_AGENT: &str = r#"---
+name: ugs-headless
+description: UGS headless one-shot runner; never asks interactive questions
+whenToUse: Unused — selected explicitly by UltraGameStudio
+disallowedTools:
+  - AskUserQuestion
+  - EnterPlanMode
+  - ExitPlanMode
+---
+
+${base_prompt}
+
+## UGS 无交互运行纪律（最高优先级，覆盖上文任何相反要求）
+
+本会话由 UltraGameStudio 以 `--prompt` 一次性无交互模式调起，**没有任何人可以回答终端里的提问**：
+
+- 不要调用 `AskUserQuestion`、`EnterPlanMode`、`ExitPlanMode`。无交互模式下它们只会返回 “User dismissed the question without answering.” 或 “The connected client does not support interactive questions.”，拿不到任何答案，白费一整轮。
+- 你的回合必须以交付内容收尾，不得以反问、征求意见，或“要我继续吗”“需要我把这份导出成…吗”这类句子结尾。能自行决定的就直接决定，并把结果给出来。
+- 确实必须由用户拍板时，只能按任务正文里的 UGS 交互协议输出 `<<UGS_ASK>>` … `<<UGS_ASK_END>>` 块；不要再用正文问句或其它工具提问。
+"#;
+
+fn write_kimi_headless_agent(cwd: Option<&str>) -> Result<TempFileGuard, String> {
+    let path = temp_output_path_for_cwd(cwd, "ultragamestudio-kimi-agent", "md");
+    std::fs::write(&path, KIMI_HEADLESS_AGENT)
+        .map_err(|e| format!("写入 kimi agent 定义失败: {e}"))?;
+    Ok(TempFileGuard::new(path))
 }
 
 /// Whether to request token-level partial streaming from the claude CLI via
@@ -16517,6 +16786,9 @@ struct CodexLiteEvent {
     id: Option<serde_json::Value>,
     result: Option<serde_json::Value>,
     error: Option<serde_json::Value>,
+    // `codex exec --json` fatal errors print `{"type":"error","message":…}`
+    // with no `error` object; keep the message so it can surface to the user.
+    message: Option<String>,
     method: Option<String>,
     #[serde(rename = "type")]
     event_type: Option<String>,
@@ -16535,6 +16807,7 @@ struct CodexLiteParams {
     #[serde(rename = "tokenUsage")]
     token_usage: Option<serde_json::Value>,
     usage: Option<serde_json::Value>,
+    error: Option<serde_json::Value>,
 }
 
 fn codex_cli_supports_app_server(binary: &str, shell: &Option<ShellSpec>) -> bool {
@@ -16572,6 +16845,35 @@ fn claude_cli_supports_stream_input(binary: &str, shell: &Option<ShellSpec>) -> 
     let help_text = command_text_output_with_timeout(help_cmd, std::time::Duration::from_secs(5))
         .unwrap_or_default();
     let supported = claude_help_supports_stream_input(&help_text);
+
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, supported);
+    }
+    supported
+}
+
+/// Whether this claude build accepts `--effort`.
+///
+/// Probed once per binary (same shape as the `--bare` / `--input-format`
+/// probes): an older CLI aborts on an unknown option, which would kill the
+/// whole turn, so the flag is only appended when the help text advertises it.
+/// A failed probe degrades to "not supported" — the turn still runs, just on
+/// the CLI's own thinking default.
+fn claude_cli_supports_effort(binary: &str, shell: &Option<ShellSpec>) -> bool {
+    let key = format!("{}\0{}", binary, shell_spec_cache_key(shell));
+    let cache = CLAUDE_EFFORT_SUPPORT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some(supported) = cache.get(&key) {
+            return *supported;
+        }
+    }
+
+    let help_args = vec!["--help".to_string()];
+    let mut help_cmd = build_launch_command(binary, &help_args, shell);
+    help_cmd.env("DISABLE_AUTOUPDATER", "1");
+    let help_text = command_text_output_with_timeout(help_cmd, std::time::Duration::from_secs(5))
+        .unwrap_or_default();
+    let supported = claude_help_supports_effort(&help_text);
 
     if let Ok(mut cache) = cache.lock() {
         cache.insert(key, supported);
@@ -17507,6 +17809,23 @@ async fn ai_cli(
         // so the same cmd.exe ~8191-char cap applies. See the is_kimi branch.
         let mut kimi_node_entry: Option<String> = None;
 
+        // 会话级思考深度。前端（`gatewayRouteEnv`）只在「该渠道+模型确实支持」
+        // 时才下发 `UGS_THINKING_LEVEL`，值是渠道原生的等级拼写；这里按 adapter
+        // 翻译成各自真正接受的传参方式。缺省 = 不注入，保持 CLI 自身默认档。
+        let thinking_level = env_vars
+            .as_ref()
+            .and_then(|vars| env_value(vars, "UGS_THINKING_LEVEL"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        // 完整思考计划（前端 `thinkingLevels` 解析好的族判定结果）。dsh 侧用它
+        // 在第三方 pi-ai 路由上声明 `reasoningEfforts`/`compat`，让「非官方端点」
+        // 也有真实可用的档位，而不是像以前那样整体隐藏或静默丢弃。
+        let thinking_plan = env_vars
+            .as_ref()
+            .and_then(|vars| env_value(vars, "UGS_THINKING_PLAN"))
+            .and_then(|raw| dsh_log::parse_thinking_plan(Some(&raw)));
+
         if is_codex {
             if codex_app_server {
                 // Keep a Codex App Server connection alive for this turn.
@@ -17518,6 +17837,15 @@ async fn ai_cli(
                     args.push(format!(
                         "sandbox_workspace_write.writable_roots={}",
                         toml_literal_string_array(&extra_workspace_paths)
+                    ));
+                }
+                // 思考深度走 codex 的全局配置覆盖 `-c`，必须排在子命令
+                // `app-server` 之前，否则会被当成子命令参数。
+                if let Some(level) = thinking_level.as_deref() {
+                    args.push("-c".into());
+                    args.push(format!(
+                        "model_reasoning_effort={}",
+                        toml_literal_string(level)
                     ));
                 }
                 args.push("app-server".into());
@@ -17548,6 +17876,15 @@ async fn ai_cli(
                     .filter(|model| cli_runtime::should_pass_model(&adapter, model))
                 {
                     args.extend(["--model".into(), model.to_string()]);
+                }
+                // 思考深度：codex 的配置键是 `model_reasoning_effort`
+                // （none/minimal/low/medium/high/xhigh），CLI 只提供 `-c` 覆盖。
+                if let Some(level) = thinking_level.as_deref() {
+                    args.push("-c".into());
+                    args.push(format!(
+                        "model_reasoning_effort={}",
+                        toml_literal_string(level)
+                    ));
                 }
                 if let Some(dir) = cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()) {
                     if Path::new(dir).is_dir() {
@@ -17665,6 +18002,21 @@ async fn ai_cli(
             args.push(task);
             args.push("--output-format".into());
             args.push("stream-json".into());
+
+            // Suppress kimi's own interactive-question habit. A headless
+            // `--prompt` turn auto-dismisses `AskUserQuestion`, and the CLI then
+            // tells the model to "ask the user directly in your text response
+            // instead" — which UGS's plain-text fallback converts into another
+            // widget, so one request becomes a question-every-round loop. The
+            // profile drops the three interactive tools and states the rule in
+            // the prompt. Injected only when this build's help advertises
+            // `--agent-file`; an unknown flag would abort the whole turn.
+            if kimi_cli_supports_agent_file(&binary, &shell) {
+                let agent = write_kimi_headless_agent(cwd.as_deref())?;
+                args.push("--agent-file".into());
+                args.push(agent.path().to_string_lossy().to_string());
+                temp_files.push(agent);
+            }
 
             // Model selection never rides a real id via `--model`: the CLI
             // resolves unknown aliases against config.toml's [models.*] table
@@ -17785,15 +18137,30 @@ async fn ai_cli(
             } else {
                 DSH_CMDSHIM_MAX_CMDLINE_LEN
             };
-            let task_via_patch = dsh_argv_estimate > dsh_cmdline_cap;
-            let _ = std::fs::write(
-                &dsh_patch_path,
-                dsh_log::ugs_patch_yaml(
+            let mut task_via_patch = dsh_argv_estimate > dsh_cmdline_cap;
+            let mut dsh_patch = dsh_log::ugs_patch_yaml_with_plan(
+                dsh_model,
+                dsh_base_url,
+                task_via_patch.then_some(task.as_str()),
+                thinking_level.as_deref(),
+                thinking_plan.as_ref(),
+            );
+            // 不变量：决定用占位符 `"."` 顶替任务之前，patch 里必须真的带上了
+            // 任务文本。任何让 `headless-runner.task` 缺失的路径都不能静默用
+            // `"."` 冒充任务（dsh 会把 `.` 当用户消息，模型只看到一个句点，
+            // 表现成"大模型失智"）。宁可退回 argv 传任务——那种情况超长会明确
+            // 报 os error 206——也不静默丢任务。
+            if task_via_patch && !dsh_patch.contains("id: headless-runner") {
+                task_via_patch = false;
+                dsh_patch = dsh_log::ugs_patch_yaml_with_plan(
                     dsh_model,
                     dsh_base_url,
-                    task_via_patch.then_some(task.as_str()),
-                ),
-            );
+                    None,
+                    thinking_level.as_deref(),
+                    thinking_plan.as_ref(),
+                );
+            }
+            let _ = std::fs::write(&dsh_patch_path, dsh_patch);
             temp_files.push(TempFileGuard::new(dsh_patch_path.clone()));
             args.push("--patch".into());
             args.push(dsh_patch_path.to_string_lossy().to_string());
@@ -18039,6 +18406,15 @@ async fn ai_cli(
                 args.push("--model".into());
                 args.push(m.to_string());
             }
+            // 思考深度：claude CLI 用 `--effort <level>`
+            // （low/medium/high/xhigh/max）。旧版本没有这个选项，传了会直接
+            // 报 unknown option 把整轮打死，所以先探一次 `--help` 再决定。
+            if let Some(level) = thinking_level.as_deref() {
+                if claude_cli_supports_effort(&binary, &shell) {
+                    args.push("--effort".into());
+                    args.push(level.to_string());
+                }
+            }
 
             // Permission mode (from the AIDock dropdown) so a headless run can
             // act without stalling on permission prompts:
@@ -18083,6 +18459,38 @@ async fn ai_cli(
             }
         }
 
+        // If codex's own `config.toml` already selects a named `model_provider`
+        // (the user's working relay + endpoint/wire layout), UGS must NOT
+        // override `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`: injecting
+        // them makes codex resolve a different provider/wire than the configured
+        // one, so the relay rejects the turn (HTTP 40x surfaced as "turn status
+        // failed"). The selected model still rides `--model`.
+        //
+        // The credential, however, must still come from 设置 → 模型 instead of the
+        // user's global `~/.codex/auth.json`: leaving codex on that stale file is
+        // exactly why editing the channel key had no effect (the Kuro gateway kept
+        // answering `403 该用途已停止接受新请求` with the old key). So this spawn
+        // overrides *only* the selected provider's credential slot via
+        // `-c model_providers.<provider>.env_key=…` and exports the channel key
+        // under that variable — endpoint and `wire_api` stay as configured.
+        let codex_respects_own_config = is_codex && codex_uses_named_model_provider();
+        let codex_channel_key = if codex_respects_own_config {
+            env_vars
+                .as_ref()
+                .and_then(|env| env_value(env, "OPENAI_API_KEY"))
+                .map(str::to_owned)
+        } else {
+            None
+        };
+        if codex_channel_key.is_some() {
+            if let Some(provider) = codex_provider_credential_override() {
+                args.push("-c".into());
+                args.push(format!(
+                    "model_providers.{provider}.env_key=\"{CODEX_CHANNEL_KEY_ENV}\""
+                ));
+            }
+        }
+
         let mut cmd = if let Some(entry) = dsh_node_entry.as_deref() {
             // dsh direct-node launch: `node <bin.js> --profile headless <task>`.
             // Skip the launch-shell wrapper entirely so the long task argv goes
@@ -18110,14 +18518,6 @@ async fn ai_cli(
         } else {
             build_launch_command(&binary, &args, &shell)
         };
-        // If codex's own `~/.codex/config.toml` already selects a named
-        // `model_provider` (the user's working relay + credential), UGS must
-        // NOT override `OPENAI_BASE_URL`/`OPENAI_API_KEY`. Injecting them makes
-        // codex resolve a different provider/wire/auth than the configured one,
-        // so the relay rejects the turn (HTTP 40x surfaced as "turn status
-        // failed"). The selected model still rides `--model`; codex uses its own
-        // config + `auth.json` for endpoint/wire/credentials.
-        let codex_respects_own_config = is_codex && codex_uses_named_model_provider();
         if let Some(env_vars) = env_vars.as_ref() {
             for (key, value) in env_vars {
                 if !key.trim().is_empty() && key != "UGS_CLAUDE_BARE" {
@@ -18131,6 +18531,12 @@ async fn ai_cli(
                     cmd.env(key, value);
                 }
             }
+        }
+        if let Some(key) = codex_channel_key.as_deref() {
+            // The channel credential, exported under the variable the selected
+            // provider's overridden `env_key` points at. codex prefers it over the
+            // stale `auth.json`, so 设置 → 模型 finally drives the real request.
+            cmd.env(CODEX_CHANNEL_KEY_ENV, key);
         }
         if disable_autoupdater {
             cmd.env("DISABLE_AUTOUPDATER", "1");
@@ -18683,6 +19089,10 @@ async fn ai_cli(
             // so we can wrap the model's chain-of-thought in `<think>` markers
             // and close it when text resumes (mirrors the claude convention).
             let mut zcode_in_think = false;
+            // codex: last error message seen on stdout (`error` / `turn.failed`
+            // events). Both events carry the same message, so dedupe here —
+            // only the first copy is pushed into the streamed output.
+            let mut codex_last_error: Option<String> = None;
             // tool_use id → start time, so a tool_result can report its duration.
             let mut tool_starts: HashMap<String, std::time::Instant> = HashMap::new();
             let mut init_done = false;
@@ -19112,6 +19522,50 @@ async fn ai_cli(
                                 }
                                 continue;
                             }
+                            Some("error") | Some("turn.failed") | Some("turn/failed") => {
+                                // `codex exec --json` reports transport failures
+                                // (429 quota/auth, network) as an `error` event
+                                // followed by `turn.failed`; neither carries text
+                                // deltas, so without this the process exits 1 with
+                                // both stderr and the reply empty and UGS prints an
+                                // opaque `退出码 1:` with no detail. Record the
+                                // message once (both events carry the same text) so
+                                // the failure detail surfaces to the user.
+                                let message = event
+                                    .error
+                                    .as_ref()
+                                    .and_then(|error| error.get("message"))
+                                    .and_then(|message| message.as_str())
+                                    .map(ToString::to_string)
+                                    .or_else(|| {
+                                        event
+                                            .params
+                                            .as_ref()
+                                            .and_then(|params| params.error.as_ref())
+                                            .and_then(|error| error.get("message"))
+                                            .and_then(|message| message.as_str())
+                                            .map(ToString::to_string)
+                                    })
+                                    .or_else(|| event.message.clone())
+                                    .filter(|message| !message.trim().is_empty());
+                                if let Some(message) = message {
+                                    if codex_last_error.as_deref() != Some(message.as_str()) {
+                                        codex_last_error = Some(message.clone());
+                                        acc.push_str(&message);
+                                        if let Ok(mut current) = codex_streamed_output_reader.lock()
+                                        {
+                                            current.push_str(&message);
+                                        }
+                                        progress.emit_now(&format!("⚠ {message}\n"));
+                                    }
+                                }
+                                if event.kind() != Some("error") {
+                                    if let Ok(mut current) = codex_turn_status_reader.lock() {
+                                        *current = Some("failed".to_string());
+                                    }
+                                }
+                                continue;
+                            }
                             _ => {}
                         }
                         if let Some(usage) = event.turn_usage() {
@@ -19133,11 +19587,23 @@ async fn ai_cli(
                                 item.item_type.as_deref(),
                                 Some("agent_message") | Some("agentMessage")
                             ) {
-                                if codex_streamed_output_reader
-                                    .lock()
-                                    .ok()
-                                    .is_some_and(|current| !current.is_empty())
-                                {
+                                // `item/agentMessage/delta` streams the same text
+                                // token by token, so its completed twin must be
+                                // skipped — but the exec path emits NO deltas and
+                                // delivers each message whole, several per turn
+                                // (progress preambles, then the final answer).
+                                // Testing "the buffer is non-empty" made the
+                                // first message poison every later one, so a long
+                                // turn surfaced only its opening line.
+                                let message = item.text.as_deref().map(str::trim).unwrap_or("");
+                                let already_streamed = message.is_empty()
+                                    || codex_streamed_output_reader
+                                        .lock()
+                                        .ok()
+                                        .is_some_and(|current| {
+                                            current.trim_end().ends_with(message)
+                                        });
+                                if already_streamed {
                                     continue;
                                 }
                                 let Some(line) = codex_progress_line(item) else {
@@ -20374,6 +20840,134 @@ mod tests {
         assert!(cli_update_command(codex, None).is_err());
     }
 
+    #[test]
+    fn codex_update_rejects_desktop_app_managed_binary() {
+        // The desktop app's private runtime can never be updated from the
+        // command line; say so instead of returning a command that silently
+        // rewrites a different install tree.
+        let codex = CLI_UPDATE_SPECS
+            .iter()
+            .find(|spec| spec.adapter == "codex")
+            .unwrap();
+        let exe = r"C:\Users\me\AppData\Local\OpenAI\Codex\bin\f1c7ee7a13db5fed\codex.exe";
+        assert!(is_codex_desktop_app_path(exe));
+        let err = cli_update_command(codex, Some(exe)).unwrap_err();
+        assert!(err.contains("桌面应用"), "错误信息应引导用户去桌面应用：{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_update_uses_bun_for_bun_global_shim() {
+        let codex = CLI_UPDATE_SPECS
+            .iter()
+            .find(|spec| spec.adapter == "codex")
+            .unwrap();
+        let shim = r"C:\Users\me\.bun\bin\codex.exe";
+        let cmd = cli_update_command(codex, Some(shim)).unwrap();
+        assert_eq!(
+            cmd.get_program().to_string_lossy(),
+            r"C:\Users\me\.bun\bin\bun.exe"
+        );
+        assert_eq!(
+            command_arg_strings(&cmd),
+            vec!["install", "-g", "@openai/codex@latest"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_update_uses_npm_for_npm_global_shim() {
+        let codex = CLI_UPDATE_SPECS
+            .iter()
+            .find(|spec| spec.adapter == "codex")
+            .unwrap();
+        let shim = r"C:\Users\me\AppData\Roaming\npm\codex.cmd";
+        assert!(is_npm_global_shim_path(shim));
+        let cmd = cli_update_command(codex, Some(shim)).unwrap();
+        assert_eq!(
+            command_arg_strings(&cmd),
+            vec![
+                "/C",
+                "npm.cmd",
+                "install",
+                "-g",
+                "@openai/codex@latest"
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_update_falls_back_to_self_update_for_unknown_source() {
+        // A bare command name (vendor installer / custom path) keeps the
+        // historical `codex update` delegation.
+        let codex = CLI_UPDATE_SPECS
+            .iter()
+            .find(|spec| spec.adapter == "codex")
+            .unwrap();
+        assert!(!is_codex_desktop_app_path("codex"));
+        assert!(!is_npm_global_shim_path("codex"));
+        let cmd = cli_update_command(codex, Some("codex")).unwrap();
+        assert!(command_arg_strings(&cmd).ends_with(&["update".to_string()]));
+    }
+
+    #[test]
+    fn summarize_command_failure_prefers_stderr_tail_and_exit_code() {
+        let outcome = CommandOutcome {
+            success: false,
+            exit_code: Some(1),
+            text: "out\n".to_string(),
+            stderr: "line1\nline2\nline3\nline4\n\n".to_string(),
+        };
+        let summary = summarize_command_failure(&outcome);
+        assert!(summary.contains("line2 | line3 | line4"), "{summary}");
+        assert!(!summary.contains("line1"), "只保留末尾几行：{summary}");
+        assert!(summary.contains("退出码 1"), "{summary}");
+    }
+
+    #[test]
+    fn summarize_command_failure_falls_back_to_stdout_then_exit_code() {
+        let stdout_only = CommandOutcome {
+            success: false,
+            exit_code: Some(2),
+            text: "EACCES: permission denied\n".to_string(),
+            stderr: String::new(),
+        };
+        assert!(summarize_command_failure(&stdout_only).contains("EACCES"));
+
+        let silent = CommandOutcome {
+            success: false,
+            exit_code: None,
+            text: "\n".to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            summarize_command_failure(&silent),
+            "进程异常退出，且无错误输出"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_outcome_reports_nonzero_exit_code() {
+        // The regression that made "更新一直失败" look like success: the old
+        // helper only checked that the process exited in time. Skipped when the
+        // managed temp dir is not writable (e.g. a sandboxed runner), since the
+        // helper needs it for the stdout/stderr side channels.
+        let probe = temp_output_path("ultragamestudio-test-probe", "txt");
+        if std::fs::File::create(&probe).is_err() {
+            eprintln!("跳过：托管临时目录不可写 {}", probe.display());
+            return;
+        }
+        let _ = std::fs::remove_file(&probe);
+
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg("exit 3");
+        let outcome =
+            command_outcome_with_timeout(cmd, std::time::Duration::from_secs(30)).unwrap();
+        assert!(!outcome.success);
+        assert_eq!(outcome.exit_code, Some(3));
+    }
+
     #[cfg(windows)]
     #[test]
     fn cli_update_command_wraps_windows_npm_cmd() {
@@ -21479,6 +22073,55 @@ requires_openai_auth = true
     }
 
     #[test]
+    fn codex_credential_override_targets_only_a_declared_named_provider() {
+        // The relay layout this bug came from: a named provider with its own
+        // credential slot — UGS overrides exactly that slot.
+        let relay = "model_provider = \"sss\"\n\
+model = \"gpt-5.6-sol\"\n\
+[model_providers.sss]\n\
+name = \"packycode\"\n\
+base_url = \"https://api.packycode.com/v1\"\n\
+wire_api = \"responses\"\n\
+requires_openai_auth = true\n";
+        assert_eq!(
+            codex_provider_for_credential_override(relay).as_deref(),
+            Some("sss")
+        );
+
+        // The provider table must exist: writing `env_key` into a provider codex
+        // cannot otherwise resolve would break the turn outright.
+        assert_eq!(
+            codex_provider_for_credential_override("model_provider = \"ghost\"\n"),
+            None
+        );
+        // Default/openai providers take the plain OPENAI_API_KEY env instead.
+        assert_eq!(
+            codex_provider_for_credential_override("model_provider = \"openai\"\n"),
+            None
+        );
+        assert_eq!(
+            codex_provider_for_credential_override("model = \"gpt-5.1\"\n"),
+            None
+        );
+        assert_eq!(
+            codex_provider_for_credential_override("not valid toml ["),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_credential_override_names_a_stable_env_var() {
+        // The `-c` override and the exported variable must agree, and the name
+        // must be UGS-owned so it can never collide with a user's own key var.
+        assert_eq!(CODEX_CHANNEL_KEY_ENV, "UGS_CODEX_CHANNEL_KEY");
+        let arg = format!(
+            "model_providers.{}.env_key=\"{CODEX_CHANNEL_KEY_ENV}\"",
+            "sss"
+        );
+        assert_eq!(arg, "model_providers.sss.env_key=\"UGS_CODEX_CHANNEL_KEY\"");
+    }
+
+    #[test]
     fn codex_tool_patch_keeps_file_change_paths() {
         let event: CodexLiteEvent = serde_json::from_str(
             r#"{
@@ -21713,6 +22356,40 @@ requires_openai_auth = true
         assert!(!claude_help_supports_stream_input(
             "--output-format <format> text or stream-json"
         ));
+    }
+
+    #[test]
+    fn claude_effort_support_comes_from_help_text() {
+        // 本机 claude 的 `--effort <level>`（low/medium/high/xhigh/max）。
+        assert!(claude_help_supports_effort(
+            "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+        ));
+        assert!(!claude_help_supports_effort(
+            "Options:\n  --model <model>\n  --verbose"
+        ));
+    }
+
+    #[test]
+    fn kimi_agent_file_support_comes_from_help_text() {
+        assert!(kimi_help_supports_agent_file(
+            "  --agent-file <path>   Load an agent definition from a Markdown file"
+        ));
+        assert!(!kimi_help_supports_agent_file(
+            "  --prompt <prompt>     Run one prompt non-interactively"
+        ));
+    }
+
+    #[test]
+    fn kimi_headless_agent_keeps_base_prompt_and_drops_ask_tools() {
+        // `${base_prompt}` must survive: without it the agent file REPLACES
+        // kimi's effective system prompt (environment, AGENTS.md, skills)
+        // instead of adding to it.
+        assert!(KIMI_HEADLESS_AGENT.contains("${base_prompt}"));
+        assert!(KIMI_HEADLESS_AGENT.contains("disallowedTools:"));
+        for tool in ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"] {
+            assert!(KIMI_HEADLESS_AGENT.contains(tool), "missing {tool}");
+        }
+        assert!(KIMI_HEADLESS_AGENT.contains("<<UGS_ASK>>"));
     }
 
     #[test]

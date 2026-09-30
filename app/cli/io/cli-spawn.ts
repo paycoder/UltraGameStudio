@@ -602,15 +602,30 @@ export function spawnCliAgent(prompt: string, opts: SpawnCliAgentOpts): Promise<
 
   return new Promise<string>((resolve, reject) => {
     const env: NodeJS.ProcessEnv = { ...process.env };
-    // If codex's own `~/.codex/config.toml` already selects a named
-    // `model_provider` (the user's working relay + credential), UGS must NOT
-    // override OPENAI_BASE_URL/OPENAI_API_KEY. Injecting them makes codex
+    // If codex's own `config.toml` already selects a named `model_provider` (the
+    // user's working relay + endpoint/wire layout), UGS must NOT override
+    // OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL. Injecting them makes codex
     // resolve a different provider/wire/auth than the configured one, so the
     // relay rejects the turn (HTTP 40x surfaced as "turn status failed"). The
-    // selected model still rides `--model`; codex uses its own config +
-    // auth.json for endpoint/wire/credentials.
+    // selected model still rides `--model`.
+    //
+    // The credential, however, must still come from 设置 → 模型 rather than the
+    // user's global `~/.codex/auth.json`: leaving codex on that stale file is why
+    // editing the channel key had no effect at all. So override *only* the
+    // selected provider's credential slot via
+    // `-c model_providers.<provider>.env_key=…` and export the channel key under
+    // that variable — endpoint and `wire_api` stay exactly as configured.
     const codexRespectsOwnConfig =
       isCodex && codexConfigSelectsNamedModelProviderFromDisk();
+    const codexChannelKey = codexRespectsOwnConfig
+      ? opts.env?.OPENAI_API_KEY?.trim() || null
+      : null;
+    if (codexChannelKey) {
+      const provider = codexProviderCredentialOverride();
+      if (provider) {
+        args.push('-c', `model_providers.${provider}.env_key="${CODEX_CHANNEL_KEY_ENV}"`);
+      }
+    }
     if (opts.env) {
       for (const [k, v] of Object.entries(opts.env)) {
         if (!k.trim() || k === 'UGS_CLAUDE_BARE') continue;
@@ -622,6 +637,12 @@ export function spawnCliAgent(prompt: string, opts: SpawnCliAgentOpts): Promise<
         }
         env[k] = v;
       }
+    }
+    if (codexChannelKey) {
+      // The channel credential, exported under the variable the overridden
+      // `env_key` points at. codex prefers it over the stale `auth.json`, so
+      // 设置 → 模型 finally drives the real request.
+      env[CODEX_CHANNEL_KEY_ENV] = codexChannelKey;
     }
     normalizeSpawnEnv(env);
     if (disableAutoupdater) env.DISABLE_AUTOUPDATER = '1';
@@ -940,12 +961,23 @@ function codexLastMessageReady(path: string): boolean {
 }
 
 /**
- * Codex CLI host name of the user's `~/.codex/config.toml`, or null when the
- * file is missing/unreadable.
+ * Root of the user's Codex home: `CODEX_HOME` when set (codex itself honours it,
+ * as does `which-cli#preferredCodexPath`), else `~/.codex`. Keeping UGS's reads
+ * on the same root codex actually uses avoids the "UGS looked at a file codex
+ * never opens" class of bug.
+ */
+function codexUserHomeDir(): string {
+  const configured = process.env.CODEX_HOME?.trim();
+  return configured || join(homedir(), '.codex');
+}
+
+/**
+ * Codex CLI host name of the user's `config.toml`, or null when the file is
+ * missing/unreadable.
  */
 function codexConfigPath(): string | null {
   try {
-    return join(homedir(), '.codex', 'config.toml');
+    return join(codexUserHomeDir(), 'config.toml');
   } catch {
     return null;
   }
@@ -980,6 +1012,63 @@ function codexConfigSelectsNamedModelProviderFromDisk(): boolean {
     return false;
   }
   return codexConfigSelectsNamedModelProvider(text);
+}
+
+/**
+ * Env var UGS exports the selected channel's key under for Codex spawns.
+ * Overriding `model_providers.<provider>.env_key` to this name is what makes
+ * 设置 → 模型 the credential codex actually sends.
+ */
+export const CODEX_CHANNEL_KEY_ENV = 'UGS_CODEX_CHANNEL_KEY';
+
+/** The non-default `model_provider` selected by a config.toml, or null. */
+export function codexSelectedProvider(text: string): string | null {
+  const match = /^\s*model_provider\s*=\s*"([^"]*)"\s*$/m.exec(text);
+  const value = match?.[1]?.trim();
+  if (!value || value === 'openai') return null;
+  return value;
+}
+
+/** Body lines of `[model_providers.<provider>]`, or null when absent. */
+function codexProviderTable(text: string, provider: string): string | null {
+  const header = `[model_providers.${provider}]`;
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === header);
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (lines[i].trimStart().startsWith('[')) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join('\n');
+}
+
+/**
+ * The named provider whose credential slot UGS may override, if the user's
+ * config.toml selects a provider that is actually declared. `-c
+ * model_providers.<provider>.env_key=…` needs the table to exist, otherwise
+ * codex would resolve a provider with no `base_url`/`name`. Mirrors lib.rs
+ * `codex_provider_for_credential_override`.
+ */
+export function codexProviderForCredentialOverride(text: string): string | null {
+  const provider = codexSelectedProvider(text);
+  if (!provider) return null;
+  return codexProviderTable(text, provider) == null ? null : provider;
+}
+
+/** Re-read the user's config.toml and report the provider to override, if any. */
+export function codexProviderCredentialOverride(): string | null {
+  const path = codexConfigPath();
+  if (!path) return null;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  return codexProviderForCredentialOverride(text);
 }
 
 const ERROR_CONTEXT_LIMIT = 1200;

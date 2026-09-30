@@ -13,6 +13,7 @@
  */
 import {
   INTERACTION_PROTOCOL,
+  extractLeadConclusion,
   formatAnswerForPrompt,
   parseInteraction,
   stripInteraction,
@@ -306,7 +307,13 @@ export async function runAgentWithInteraction(opts: {
     );
     const answer = await callbacks.promptInteraction(req);
     if (!answer || !stillRunning()) return clean;
-    appendix += `\n\n${formatAnswerForPrompt(req, answer)}`;
+    // Pin this round's own lead conclusion. `appendix` already accumulates every
+    // answered question, but the node's own framing (what it decided the task
+    // IS) was never carried forward — so a re-invocation re-derived it and could
+    // land on a different framing for the same request.
+    appendix += `\n\n${formatAnswerForPrompt(req, answer, {
+      roundConclusion: extractLeadConclusion(clean),
+    })}`;
   }
 
   callbacks.onLog(

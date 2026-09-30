@@ -1158,6 +1158,21 @@ function GeneralSettings({
   setLocale: (locale: Locale) => void;
   setPromptAutoTranslate: (enabled: boolean) => void;
 }) {
+  // 输入框底部那三个「进阶入口」按钮的显隐开关。默认隐藏；这里直接读 store，
+  // 让 AIDock 立刻重渲染，不用把开关一路透传成 props。
+  const composerToolButtonsVisible = useStore(
+    (s) => s.composerToolButtonsVisible,
+  );
+  const setComposerToolButtonsVisible = useStore(
+    (s) => s.setComposerToolButtonsVisible,
+  );
+  // 思考深度选择器：显示开关 + 手写档位覆盖（私有网关档位词汇不统一时的逃生门）。
+  const thinkingLevelsEnabled = useStore((s) => s.thinkingLevelsEnabled);
+  const setThinkingLevelsEnabled = useStore((s) => s.setThinkingLevelsEnabled);
+  const thinkingLevelOverrides = useStore((s) => s.thinkingLevelOverrides);
+  const setThinkingLevelOverrides = useStore(
+    (s) => s.setThinkingLevelOverrides,
+  );
   // Launch shell that wraps AI CLI invocations (independent of the model CLI).
   const [runShell, setRunShellState] = useState<RunShellConfig>(() =>
     getRunShell(),
@@ -1336,6 +1351,40 @@ function GeneralSettings({
             )}
           />
         </button>
+      </SettingRow>
+
+      <SettingRow
+        title={t(locale, 'settings.composerToolButtonsLabel')}
+        description={t(locale, 'settings.composerToolButtonsDescription')}
+      >
+        <SwitchControl
+          checked={composerToolButtonsVisible}
+          onChange={setComposerToolButtonsVisible}
+        />
+      </SettingRow>
+
+      <SettingRow
+        title={t(locale, 'settings.thinkingLevelsLabel')}
+        description={t(locale, 'settings.thinkingLevelsDescription')}
+      >
+        <SwitchControl
+          checked={thinkingLevelsEnabled}
+          onChange={setThinkingLevelsEnabled}
+        />
+      </SettingRow>
+
+      <SettingRow
+        title={t(locale, 'settings.thinkingLevelOverridesLabel')}
+        description={t(locale, 'settings.thinkingLevelOverridesDescription')}
+      >
+        <textarea
+          value={thinkingLevelOverrides}
+          onChange={(event) => setThinkingLevelOverrides(event.target.value)}
+          placeholder={t(locale, 'settings.thinkingLevelOverridesPlaceholder')}
+          rows={3}
+          spellCheck={false}
+          className="w-full max-w-[34rem] rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-fg outline-none transition-colors focus:border-accent"
+        />
       </SettingRow>
 
       <SettingRow

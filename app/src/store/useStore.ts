@@ -311,7 +311,9 @@ import {
 import {
   INTERACTION_PROTOCOL,
   detectFallbackInteraction,
+  extractLeadConclusion,
   formatAnswerForPrompt,
+  isPinnableAnswer,
   liveProse,
   parseInteraction,
   stripCliProgressMarkers,
@@ -6409,6 +6411,10 @@ ${previousReply.slice(0, 4000)}
           // asking can't spin forever.
           let continuation = '';
           let finalAnswer = '';
+          // Facts settled by earlier rounds of THIS turn (question → answer).
+          // Fed back with every continuation so a re-invocation cannot re-decide
+          // what the user already answered (see InteractionBaseline).
+          const confirmedBaseline: string[] = [];
           // 「会话文件」列表只能从消息文本里的 <<UGS_TOOL>> 哨兵解析出本会话
           // AI 读/改过的文件。CLI 回合最终化时用的是不含哨兵的纯净答复
           // （result/acc），会把流式期间出现过的工具事件抹掉，导致文件先显示
@@ -6776,7 +6782,8 @@ ${previousReply.slice(0, 4000)}
               // (or at minimum an input box) instead of a bubble that ends in
               // "?" while the turn stays parked on `awaitInteraction`.
               // `allowInput: true` on the synthesized select gives the user an
-              // escape hatch if the heuristic misfires.
+              // escape hatch if the heuristic misfires. Always on by design: no
+              // settings switch, so every harness gets the same behaviour.
               req = detectFallbackInteraction(stripCliProgressMarkers(answer));
             }
             if (!req) {
@@ -6803,8 +6810,23 @@ ${previousReply.slice(0, 4000)}
               break;
             }
             // Continue in a fresh bubble with the user's choice fed back.
+            // The appendix pins two things the next round must not re-decide:
+            // the model's own conclusion from this round (otherwise it re-reads
+            // the source material and re-labels the task) and every Q/A settled
+            // earlier in this turn. It also forbids re-emitting a deliverable
+            // this turn already produced.
             newBubble(withAiTiming('⟳ 生成中…'));
-            continuation = formatAnswerForPrompt(req, userAnswer);
+            continuation =
+              `${formatAnswerForPrompt(req, userAnswer, {
+                roundConclusion: extractLeadConclusion(
+                  stripInteraction(answer),
+                ),
+                confirmations: confirmedBaseline,
+              })}\n\n${SIMPLE_CHAT_INCREMENT_RULE}`;
+            const confirmed = summarizeAnswer(req, userAnswer);
+            if (isPinnableAnswer(req, userAnswer)) {
+              confirmedBaseline.push(`${req.prompt} → ${confirmed}`);
+            }
           }
           const turnMessageId = activeId;
           // Defensive: if a recall block survived into the final answer (e.g.
@@ -7630,14 +7652,23 @@ function runningSteerEntryForQueued(
 
 function steerableQueuedChatMessageIds(): string[] {
   return [...chatTurnQueueEntries.values()]
-    .filter(
-      (entry) =>
-        !entry.started &&
-        !entry.cancelled &&
-        !entry.steering &&
-        !entry.confirmed &&
-        runningSteerEntryForQueued(entry) !== null,
-    )
+    .filter((entry) => {
+      if (
+        entry.started ||
+        entry.cancelled ||
+        entry.steering ||
+        entry.confirmed
+      ) {
+        return false;
+      }
+      const running = runningSteerEntryForQueued(entry);
+      // Only expose the lightning action when the running CLI exposes a real
+      // in-turn steer channel (codex/claude/zcode). Non-native adapters fall
+      // back to a confirm-only path inside trySteerQueuedCliTurn, which makes
+      // the button feel like a no-op — hide it instead. See issue "GPT 插话
+      // 点击无效".
+      return running?.channel.liveSteer?.native === true;
+    })
     .map((entry) => entry.messageId);
 }
 
@@ -8834,6 +8865,17 @@ function dismissSettledWaitingInputNotifications(
 
 /** Max times a single node may ask the user before we stop re-invoking it. */
 const MAX_INTERACTION_ROUNDS = 6;
+
+/**
+ * Appended to every interaction-continuation in simple-chat mode. Without it a
+ * follow-up answer re-runs the whole task and the model re-emits the entire
+ * deliverable: session 037bb1b8 produced the same 10-question interview set
+ * five times over (each round cost 3–10 minutes) because answering "要不要导出
+ * docx？" was implemented as "run the task again".
+ */
+const SIMPLE_CHAT_INCREMENT_RULE =
+  '本轮只输出相对上一轮的增量或改动部分。如果上一轮已经给出过完整交付物（整套题、文档、报告等），不要重发全量内容；' +
+  '也不要重新读一遍已经读过的资料。只有在你判断上一轮并没有产出可用结果时，才重新给出完整结果。';
 
 /** How many prior chat turns simple-workflow mode folds into the prompt for
  *  multi-turn context (bounded so long chats don't overflow the model). */
